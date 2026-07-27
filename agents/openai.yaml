@@ -1,0 +1,4 @@
+interface:
+  display_name: "嘉立创 PCB 设计"
+  short_description: "嘉立创EDA原理图、普通PCB与高速阻抗设计的一体化工作流"
+  default_prompt: "Use $easyeda-pcb-design to classify, build, and audit this EasyEDA design, loading high-speed guidance only when required."
