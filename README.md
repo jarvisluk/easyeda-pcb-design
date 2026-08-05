@@ -29,8 +29,12 @@
 ## 使用前提
 
 - 已安装并打开**嘉立创 EDA 专业版**
-- 已配置配套的 EasyEDA API 能力（与本技能一起使用）
+- 已安装配套 **easyeda-api** skill，且本地 easyeda-bridge 可连（缺一不可；Agent 不得臆造 API）
 - 你的 AI 工具支持安装本地 skill
+
+**不适用：** KiCad / Altium / OrCAD 等非嘉立创 EDA 工程。
+
+**重要：** 审计结果 **不是**下单打样授权。高速证据优先用磁盘 artifact；文字证据需**你本人**设置 `EASYEDA_AUDIT_USER_ATTEST=YES` 并手写 attest 文件（Agent 不得代写/代设）。基线会综合完整 PCB 网表、显式接口约束、差分形态和协议/RF 候选；未决信号会保持 `UNVERIFIED`。高速报告必须匹配当前工程、PCB、设计/约束指纹并覆盖全部候选网。晶振/时钟网则需单独的晶振专项审计报告。
 
 ## 装好后怎么用
 

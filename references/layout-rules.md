@@ -18,6 +18,26 @@
 - Avoid dead ends, branches, unnecessary layer changes, and vias inside pads unless the process supports them.
 - Do not treat a clean DRC as proof of a good return path.
 
+## Routing topology
+
+- Treat each net as a graph containing pads, vias, track endpoints, and real
+  copper intersections. By default, a newly committed route must join two
+  previously disconnected copper components.
+- Reject a candidate path when its two ends are already electrically connected;
+  this prevents a router from entering one pad or trunk at two points and
+  creating a redundant closed loop.
+- For a multi-pad net, grow one connected tree: choose the next
+  component-to-component connection with a minimum-spanning/Steiner-style
+  estimate, route it, then recompute connectivity before routing the next one.
+  Do not route every pad independently back to the original source.
+- Stop a route at the first valid contact with the destination pad, via, track,
+  or pour. Snap to one deliberate connection point instead of continuing around
+  the same copper shape to a second contact.
+- After routing a net, prune zero-purpose stubs and cycles, then recheck
+  connectivity and unrouted count. Preserve a redundant ring or parallel feed
+  only when its current-sharing, voltage-drop, reliability, and return-path
+  purpose is explicitly documented.
+
 ## Power and grounding
 
 - Size copper from current, voltage drop, allowed temperature rise, copper thickness, and via count.
@@ -41,4 +61,3 @@
 - Keep copper away from board edges and unplated slots according to the process rule.
 - Verify fiducials, tooling needs, panel breakaway zones, and component-to-edge clearance when assembling.
 - Review Gerber, drill, BOM, and pick-and-place outputs rather than assuming export success.
-

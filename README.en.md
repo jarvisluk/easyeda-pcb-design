@@ -29,8 +29,12 @@ Use AI with **EasyEDA Pro** (JLCPCB EDA) to design schematics and PCBs—from ev
 ## Before you start
 
 - **EasyEDA Pro** installed and open
-- The companion EasyEDA API capability set up for live design work
+- Companion **easyeda-api** skill installed and local easyeda-bridge reachable (required; agents must not invent APIs)
 - An AI tool that can install a local skill
+
+**Not for:** KiCad / Altium / OrCAD or other non-EasyEDA flows.
+
+**Important:** Audit results are **not** fab-release authorization. Prefer on-disk evidence artifacts. Free-text evidence needs **you** to set `EASYEDA_AUDIT_USER_ATTEST=YES` and write the attest file (agents must not). Baseline discovery combines the complete PCB net list, explicit interface constraints, differential-pair shapes, and protocol/RF candidates; unresolved signals remain `UNVERIFIED`. A high-speed report must match the current project, PCB, design/constraint fingerprints, and detected-net coverage. Crystal/clock nets use their separate cleared audit report.
 
 ## After install
 

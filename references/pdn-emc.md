@@ -57,6 +57,11 @@ meets its target impedance.
 ## Evidence gates
 
 Record each applicable result as `MANUAL_REVIEWED`, `SOLVER_VERIFIED`, or
-`MEASUREMENT_VERIFIED` with the artifact and exact PCB revision. Return
-`UNVERIFIED FOR FABRICATION` when a required PDN, ESD, or EMC claim lacks its
-specified evidence.
+`MEASUREMENT_VERIFIED` with an on-disk artifact path (preferred) or explicit
+operator attestation, plus the exact PCB revision.
+
+Do not claim regulatory certification, CE/FCC pass, pre-compliance pass, or
+production PDN sign-off from checklist review alone. Prefer on-disk measurement
+or solver artifacts. Free-text claims need the same human attestation path as
+high-speed evidence. Return `UNVERIFIED FOR FABRICATION` when a required PDN,
+ESD, or EMC claim lacks its specified evidence.

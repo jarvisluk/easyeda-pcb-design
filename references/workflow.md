@@ -24,6 +24,13 @@ Record:
 
 Treat missing electrical or mechanical requirements as unresolved constraints.
 
+Before live API work run `node scripts/check_companion.mjs` and require
+`ready: true`. Companion `easyeda-api` must be installed, EasyEDA Pro open, and
+bridge healthy. Stop if any of those are missing — do not guess APIs.
+
+Destructive edits (delete selection/project, mass net rename, bulk overwrite)
+require explicit user confirmation.
+
 ## Schematic
 
 1. Group the page by functional blocks and keep signal flow readable.
@@ -68,6 +75,9 @@ Do not select a footprint by a similar-looking name alone.
 5. Avoid arbitrary diagonal slopes, unnecessary zigzags, dead-end stubs, and excessive vias.
 6. Route clocks, crystals, analog nodes, feedback nodes, and reset signals away from noisy power switching.
 7. Do not use autorouting output without complete manual review.
+8. Recompute the net's copper connectivity after each committed path. Unless a
+   documented redundant feed is intentional, reject any path whose endpoints
+   were already connected and prune closed routing cycles before moving on.
 
 ## Copper
 
@@ -88,7 +98,7 @@ Run in order:
 2. symbol/footprint/pin-map audit;
 3. placement review;
 4. unrouted/connectivity check;
-5. angle and geometry audit;
+5. angle, geometry, and unintended routing-cycle audit;
 6. copper rebuild and filled-region readback;
 7. PCB DRC;
 8. 2D/3D mechanical and polarity review;
@@ -97,3 +107,8 @@ Run in order:
 
 Any netlist, routing, footprint, outline, or copper change invalidates downstream checks.
 
+The baseline script applies step 5 to every named explicit-routing net,
+including power and ground. A detected cycle fails unless that exact net is
+passed with `--allow-routing-cycle NET` plus `--exception-note TEXT`. Do not use
+the exception merely to silence a finding: record the current-sharing,
+voltage-drop, reliability, or return-path reason for keeping the ring.

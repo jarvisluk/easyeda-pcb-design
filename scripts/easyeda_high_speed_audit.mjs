@@ -4,21 +4,37 @@
  * Audit the active EasyEDA Pro PCB through the easyeda-api bridge.
  *
  * Geometry is reported in EasyEDA PCB canvas units (mil). This tool performs
- * deterministic screening checks. It only returns a fabrication-pass decision
- * when the constraint record supplies the review evidence that the API cannot
- * establish directly.
+ * deterministic screening checks. It never returns a bare fabrication PASS.
+ * Free-text evidence requires human attestation (env + attest file), or an
+ * on-disk artifact path must exist.
  */
 
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_PORTS = Array.from({ length: 10 }, (_, index) => 49620 + index);
-const DECISIONS = Object.freeze({
-  PASS: "PASS",
-  PASS_WITH_EXCEPTIONS: "PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS",
-  FAIL: "FAIL",
-  UNVERIFIED: "UNVERIFIED FOR FABRICATION",
-});
+import {
+  DECISION_VALUES,
+  EXIT,
+  applyDecisionExitCode,
+  constraintFingerprint,
+  designFingerprint,
+  evidenceMeetsGate,
+  existingArtifactPath,
+  fetchJson,
+  findBridge,
+  highRiskInterfaceReasons,
+  nonemptyString,
+  notAFabricationReleaseMessage,
+  resolveHumanAttestation,
+  resolveManufacturingReview,
+  resolveSafeOutputPath,
+  resolveWindow,
+} from "./audit_common.mjs";
+
+const DECISIONS = DECISION_VALUES;
+// The bridge execution sandbox does not expose enum globals. This value is
+// copied from the exact EDMT_EditorDocumentType reference in easyeda-api.
+const PCB_DOCUMENT_TYPE = 3;
 const REVIEW_EVIDENCE = new Set([
   "MANUAL_REVIEWED",
   "SOLVER_VERIFIED",
@@ -42,15 +58,24 @@ Options:
   --ground-net NET                 Return/reference net (default: GND)
   --max-pair-skew-mil N            Explicit fallback pair mismatch limit
   --max-return-via-distance-mil N  Explicit fallback return-via distance limit
-  --require-ground-pour            Require a valid filled reference-net pour
+  --require-ground-pour            Require a valid filled reference-net pour (default)
+  --allow-no-ground-pour           Opt out of the ground-pour requirement
+  --exception-note TEXT            Required with --allow-no-ground-pour
+  --user-attested-evidence         Request free-text evidence (needs human env+file)
+  --attest-file FILE               Human attest file (required with attestation)
+  --manufacturing-reviewed         Mark Gerber/BOM/PnP reviewed (needs human attest)
   --bridge-port PORT               Use one bridge port instead of scanning
   --window-id ID                   Required when multiple EasyEDA windows exist
-  --output FILE                    Also save the JSON report
+  --output FILE                    Relative path under cwd for the JSON report
+  --force                          Overwrite an existing --output file
   --self-test                      Run deterministic offline checks
   --help                           Show this help
 
-Legacy flags perform screening only. Without a complete --constraints record,
-the result is UNVERIFIED FOR FABRICATION rather than a pass.
+Human attestation also requires EASYEDA_AUDIT_USER_ATTEST=YES in the human shell.
+Agents must never set that env var or write the attest file.
+
+Exit codes: 1=error, 2=FAIL, 3=UNVERIFIED FOR FABRICATION,
+4=PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS (not a fab release).
 `;
 }
 
@@ -60,10 +85,6 @@ function finitePositive(value, option) {
     throw new Error(`${option} requires a positive finite number`);
   }
   return number;
-}
-
-function nonemptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 function parsePair(value) {
@@ -86,10 +107,17 @@ function parseArgs(argv) {
     groundNet: "GND",
     maxPairSkewMil: undefined,
     maxReturnViaDistanceMil: undefined,
-    requireGroundPour: false,
+    requireGroundPour: true,
+    allowNoGroundPour: false,
+    exceptionNote: undefined,
+    userAttestedEvidence: false,
+    attestFile: undefined,
+    manufacturingReviewed: false,
+    humanAttestation: undefined,
     bridgePort: undefined,
     windowId: undefined,
     output: undefined,
+    force: false,
     selfTest: false,
   };
 
@@ -110,13 +138,23 @@ function parseArgs(argv) {
     } else if (option === "--max-return-via-distance-mil") {
       options.maxReturnViaDistanceMil = finitePositive(next(), option);
     } else if (option === "--require-ground-pour") options.requireGroundPour = true;
-    else if (option === "--bridge-port") {
+    else if (option === "--allow-no-ground-pour") {
+      options.allowNoGroundPour = true;
+      options.requireGroundPour = false;
+    } else if (option === "--exception-note") options.exceptionNote = next();
+    else if (option === "--user-attested-evidence") {
+      options.userAttestedEvidence = true;
+    } else if (option === "--attest-file") options.attestFile = next();
+    else if (option === "--manufacturing-reviewed") {
+      options.manufacturingReviewed = true;
+    } else if (option === "--bridge-port") {
       options.bridgePort = finitePositive(next(), option);
       if (!Number.isInteger(options.bridgePort) || options.bridgePort > 65535) {
         throw new Error("--bridge-port must be an integer from 1 to 65535");
       }
     } else if (option === "--window-id") options.windowId = next();
     else if (option === "--output") options.output = next();
+    else if (option === "--force") options.force = true;
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(usage());
@@ -129,6 +167,16 @@ function parseArgs(argv) {
   if (!nonemptyString(options.groundNet)) {
     throw new Error("--ground-net requires a non-empty net name");
   }
+  if (options.allowNoGroundPour && !nonemptyString(options.exceptionNote)) {
+    throw new Error("--allow-no-ground-pour requires --exception-note TEXT");
+  }
+  if (options.manufacturingReviewed && !nonemptyString(options.attestFile)) {
+    throw new Error("--manufacturing-reviewed requires --attest-file");
+  }
+  if (options.userAttestedEvidence && !nonemptyString(options.attestFile)) {
+    throw new Error("--user-attested-evidence requires --attest-file");
+  }
+  options.humanAttestation = resolveHumanAttestation(options);
   return options;
 }
 
@@ -207,6 +255,16 @@ function mergeConstraintRecord(options, record) {
   }
   if (record?.requireGroundPour !== undefined) {
     merged.requireGroundPour = Boolean(record.requireGroundPour);
+  } else if (record && !options.allowNoGroundPour) {
+    merged.requireGroundPour = true;
+  }
+  if (record?.exceptionNote !== undefined && nonemptyString(record.exceptionNote)) {
+    merged.exceptionNote = record.exceptionNote.trim();
+  }
+  if (merged.requireGroundPour === false && !nonemptyString(merged.exceptionNote)) {
+    throw new Error(
+      "requireGroundPour=false requires exceptionNote in the constraint record or --exception-note",
+    );
   }
   if (record?.maxReturnViaDistanceMil !== undefined) {
     merged.maxReturnViaDistanceMil = finitePositive(
@@ -283,77 +341,12 @@ async function loadAndMergeConstraints(options) {
   return mergeConstraintRecord(options, record);
 }
 
-async function fetchJson(url, init = {}, timeoutMs = 2500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(body.error || `${response.status} ${response.statusText}`);
-    }
-    return body;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function findBridge(explicitPort) {
-  const ports = explicitPort ? [explicitPort] : DEFAULT_PORTS;
-  const probes = ports.map(async (port) => {
-    try {
-      const health = await fetchJson(`http://127.0.0.1:${port}/health`, {}, 800);
-      if (health.service !== "easyeda-bridge") return undefined;
-      return { port, health };
-    } catch {
-      return undefined;
-    }
-  });
-  const matches = (await Promise.all(probes)).filter(Boolean);
-  const connected = matches.find((match) => match.health.edaConnected);
-  if (connected) return connected;
-  if (matches.length) {
-    throw new Error(
-      `EasyEDA bridge found on port ${matches[0].port}, but no EDA window is connected`,
-    );
-  }
-  throw new Error(
-    explicitPort
-      ? `no verified easyeda-bridge found on port ${explicitPort}`
-      : "no verified easyeda-bridge found on ports 49620-49629",
-  );
-}
-
-async function resolveWindow(bridge, requestedWindowId) {
-  const registry = await fetchJson(
-    `http://127.0.0.1:${bridge.port}/eda-windows`,
-    {},
-    2500,
-  );
-  const windows = Array.isArray(registry.windows)
-    ? registry.windows.filter((item) => item?.connected !== false)
-    : [];
-  if (requestedWindowId) {
-    if (!windows.some((item) => item.windowId === requestedWindowId)) {
-      throw new Error(`EasyEDA window is not connected: ${requestedWindowId}`);
-    }
-    return requestedWindowId;
-  }
-  if (windows.length === 1) return windows[0].windowId;
-  if (windows.length === 0) throw new Error("no connected EasyEDA window was registered");
-  throw new Error(
-    `multiple EasyEDA windows are connected (${windows
-      .map((item) => item.windowId)
-      .join(", ")}); specify --window-id`,
-  );
-}
-
 function collectorCode() {
   return `
 const project = await eda.dmt_Project.getCurrentProjectInfo();
 if (!project) throw new Error("No EasyEDA project is open");
 const documentInfo = await eda.dmt_SelectControl.getCurrentDocumentInfo();
-if (!documentInfo || documentInfo.documentType !== EDMT_EditorDocumentType.PCB) {
+if (!documentInfo || documentInfo.documentType !== ${PCB_DOCUMENT_TYPE}) {
   throw new Error("The active EasyEDA document is not a PCB");
 }
 
@@ -362,6 +355,8 @@ const value = (object, methodName, propertyName) => {
   return object[propertyName];
 };
 const layers = await eda.pcb_Layer.getAllLayers();
+const netNames = await eda.pcb_Net.getAllNetsName();
+const components = await eda.pcb_PrimitiveComponent.getAll();
 const lines = await eda.pcb_PrimitiveLine.getAll();
 const arcs = await eda.pcb_PrimitiveArc.getAll();
 const polylines = await eda.pcb_PrimitivePolyline.getAll();
@@ -474,6 +469,14 @@ return {
     id: layer.id,
     name: layer.name,
     type: layer.type,
+  })),
+  netNames,
+  components: components.map((component) => ({
+    primitiveId: value(component, "getState_PrimitiveId", "primitiveId"),
+    designator: value(component, "getState_Designator", "designator") || "",
+    layer: value(component, "getState_Layer", "layer"),
+    x: value(component, "getState_X", "x"),
+    y: value(component, "getState_Y", "y"),
   })),
   segments,
   vias: viaData,
@@ -629,21 +632,12 @@ function evidenceStatus(evidenceRecord, key) {
   return undefined;
 }
 
-function evidenceSource(evidenceRecord, key) {
-  const value = evidenceRecord?.[key];
-  if (value && typeof value === "object") {
-    return value.source || value.artifact || value.reference;
-  }
-  return undefined;
+function validEvidence(evidenceRecord, key, acceptedStatuses, options) {
+  return evidenceMeetsGate(evidenceRecord?.[key], acceptedStatuses, options);
 }
 
-function validEvidence(evidenceRecord, key, acceptedStatuses) {
-  const status = evidenceStatus(evidenceRecord, key);
-  return Boolean(
-    status &&
-      acceptedStatuses.has(status) &&
-      nonemptyString(evidenceSource(evidenceRecord, key)),
-  );
+function evidenceGateHint() {
+  return "existing artifact/artifactPath, or human attestation (EASYEDA_AUDIT_USER_ATTEST=YES + --attest-file)";
 }
 
 function constraintCompleteness(options, signalViaCount) {
@@ -653,8 +647,24 @@ function constraintCompleteness(options, signalViaCount) {
     missing.push("no --constraints record was supplied");
     return missing;
   }
-  if (!["CONTROLLED_HIGH_SPEED", "HIGH_RISK_SI"].includes(options.classification)) {
+  const autoHighRiskReasons = highRiskInterfaceReasons(options.interfaces);
+  const effectivelyHighRisk =
+    options.classification === "HIGH_RISK_SI" || autoHighRiskReasons.length > 0;
+  if (
+    !["CONTROLLED_HIGH_SPEED", "HIGH_RISK_SI"].includes(options.classification) &&
+    !effectivelyHighRisk
+  ) {
     missing.push("classification must be CONTROLLED_HIGH_SPEED or HIGH_RISK_SI");
+  } else if (
+    !["CONTROLLED_HIGH_SPEED", "HIGH_RISK_SI"].includes(options.classification) &&
+    effectivelyHighRisk
+  ) {
+    missing.push("classification must be CONTROLLED_HIGH_SPEED or HIGH_RISK_SI");
+  }
+  if (autoHighRiskReasons.length && options.classification !== "HIGH_RISK_SI") {
+    missing.push(
+      `classification must be HIGH_RISK_SI (${autoHighRiskReasons.join("; ")})`,
+    );
   }
   if (!nonemptyString(options.fabricator)) missing.push("fabricator is missing");
   if (!options.highSpeedNets.length) missing.push("no high-speed nets are listed");
@@ -694,6 +704,20 @@ function constraintCompleteness(options, signalViaCount) {
     }
     if (stackup.source !== "FAB_CONFIRMED") {
       missing.push("stackup is not FAB_CONFIRMED");
+    } else if (
+      !existingArtifactPath(stackup.artifactPath || stackup.artifact) &&
+      !options.humanAttestation?.accepted
+    ) {
+      missing.push(`stackup FAB_CONFIRMED requires ${evidenceGateHint()}`);
+      if (options.humanAttestation?.requested && options.humanAttestation?.reason) {
+        missing.push(options.humanAttestation.reason);
+      }
+    } else if (
+      options.humanAttestation?.accepted &&
+      !existingArtifactPath(stackup.artifactPath || stackup.artifact) &&
+      !nonemptyString(stackup.sourceDocument)
+    ) {
+      missing.push("attested stackup requires sourceDocument text");
     }
   }
 
@@ -798,23 +822,35 @@ function constraintCompleteness(options, signalViaCount) {
     missing.push("signal vias exist but maxReturnViaDistanceMil is missing");
   }
 
-  if (!validEvidence(options.evidenceRecord, "impedance", IMPEDANCE_EVIDENCE)) {
-    missing.push("impedance evidence with a source/artifact is missing");
+  if (
+    !validEvidence(
+      options.evidenceRecord,
+      "impedance",
+      IMPEDANCE_EVIDENCE,
+      options,
+    )
+  ) {
+    missing.push(`impedance evidence missing (${evidenceGateHint()})`);
   }
   if (
     !validEvidence(
       options.evidenceRecord,
       "continuousReference",
       REVIEW_EVIDENCE,
+      options,
     )
   ) {
-    missing.push("continuous-reference review evidence is missing");
+    missing.push(
+      `continuous-reference review evidence missing (${evidenceGateHint()})`,
+    );
   }
   if (
     options.pairs.length &&
-    !validEvidence(options.evidenceRecord, "coupling", REVIEW_EVIDENCE)
+    !validEvidence(options.evidenceRecord, "coupling", REVIEW_EVIDENCE, options)
   ) {
-    missing.push("differential coupling review evidence is missing");
+    missing.push(
+      `differential coupling review evidence missing (${evidenceGateHint()})`,
+    );
   }
   const launchDeclared = options.interfaces.some(
     (item) =>
@@ -828,9 +864,11 @@ function constraintCompleteness(options, signalViaCount) {
     );
   } else if (
     record.launchesNotApplicable !== true &&
-    !validEvidence(options.evidenceRecord, "launches", REVIEW_EVIDENCE)
+    !validEvidence(options.evidenceRecord, "launches", REVIEW_EVIDENCE, options)
   ) {
-    missing.push("connector/BGA/protection launch review evidence is missing");
+    missing.push(
+      `connector/BGA/protection launch review evidence missing (${evidenceGateHint()})`,
+    );
   }
   if (
     signalViaCount > 0 &&
@@ -838,15 +876,24 @@ function constraintCompleteness(options, signalViaCount) {
       options.evidenceRecord,
       "returnViaLayerSpan",
       REVIEW_EVIDENCE,
+      options,
     )
   ) {
-    missing.push("return-via layer-span review evidence is missing");
+    missing.push(
+      `return-via layer-span review evidence missing (${evidenceGateHint()})`,
+    );
   }
   if (
-    options.classification === "HIGH_RISK_SI" &&
-    !validEvidence(options.evidenceRecord, "solverOrMeasurement", HIGH_RISK_EVIDENCE)
+    effectivelyHighRisk &&
+    !validEvidence(
+      options.evidenceRecord,
+      "solverOrMeasurement",
+      HIGH_RISK_EVIDENCE,
+      options,
+    )
   ) {
     missing.push("high-risk SI requires solver or measurement evidence");
+    for (const reason of autoHighRiskReasons) missing.push(reason);
   }
   return [...new Set(missing)];
 }
@@ -1085,20 +1132,52 @@ function analyze(raw, options, source) {
     );
   }
 
+  const autoHighRiskReasons = highRiskInterfaceReasons(options.interfaces);
+  const effectivelyHighRisk =
+    options.classification === "HIGH_RISK_SI" || autoHighRiskReasons.length > 0;
+
   let decision;
   if (failures.length) decision = DECISIONS.FAIL;
   else if (incompleteConstraints.length) decision = DECISIONS.UNVERIFIED;
   else decision = DECISIONS.PASS_WITH_EXCEPTIONS;
 
+  if (
+    !options.requireGroundPour &&
+    nonemptyString(options.exceptionNote) &&
+    !warnings.some((item) => item.includes("exceptionNote"))
+  ) {
+    warnings.push(`ground-pour requirement waived: ${options.exceptionNote}`);
+  }
+  if (options.humanAttestation?.accepted) {
+    warnings.push(
+      `free-text evidence accepted under human attestation (revision ${options.humanAttestation.revision}); artifacts were not verified on disk`,
+    );
+  } else if (options.humanAttestation?.requested) {
+    warnings.push(options.humanAttestation.reason);
+  }
+  for (const reason of autoHighRiskReasons) {
+    if (!warnings.includes(reason)) warnings.push(reason);
+  }
+  const manufacturing = resolveManufacturingReview(options);
+  if (!manufacturing.reviewed) warnings.push(manufacturing.reason);
+  const fingerprint = designFingerprint(raw);
+  const constraintsFingerprint = constraintFingerprint(options.constraintRecord);
+
   return {
-    schemaVersion: 2,
+    schemaVersion: 5,
+    kind: "high-speed",
     evidence: "RULE_CHECK",
     decision,
+    fabricationRelease: false,
+    manufacturingOutputsReviewed: Boolean(manufacturing.reviewed),
+    notAFabricationRelease: notAFabricationReleaseMessage(),
     source,
     generatedAt: new Date().toISOString(),
     design: {
       project: raw.project || null,
       document: raw.document || null,
+      fingerprint,
+      netCount: new Set(raw.netNames || []).size,
       layerCount: (raw.layers || []).length,
       routedSegmentCount: segments.filter((segment) => segment.net).length,
       viaCount: vias.length,
@@ -1106,7 +1185,11 @@ function analyze(raw, options, source) {
     },
     constraints: {
       sourceFile: options.constraintsPath || null,
+      fingerprint: constraintsFingerprint,
       classification: options.classification || null,
+      effectiveClassification: effectivelyHighRisk
+        ? "HIGH_RISK_SI"
+        : options.classification || null,
       fabricator: options.fabricator || null,
       highSpeedNets: options.highSpeedNets,
       differentialPairs: options.pairs,
@@ -1114,6 +1197,10 @@ function analyze(raw, options, source) {
       groundNet: options.groundNet,
       maxReturnViaDistanceMil: options.maxReturnViaDistanceMil ?? null,
       requireGroundPour: options.requireGroundPour,
+      exceptionNote: options.exceptionNote || null,
+      userAttestedEvidenceRequested: Boolean(options.userAttestedEvidence),
+      humanAttestation: options.humanAttestation || null,
+      autoHighRiskReasons,
     },
     checks: {
       drc,
@@ -1136,6 +1223,7 @@ function analyze(raw, options, source) {
       "Copper fill status does not prove uninterrupted reference coverage or absence of plane-slot crossings.",
       "Insertion loss, return loss, crosstalk, via stubs, launches, and material dispersion require solver or measurement evidence when applicable.",
       "A non-failing report remains tied to the exact reviewed routing, layer, via, stackup, connector, and copper revision.",
+      "Free-text evidence closes gates only with human attestation (EASYEDA_AUDIT_USER_ATTEST=YES + --attest-file); prefer on-disk artifact/artifactPath files.",
     ],
   };
 }
@@ -1222,6 +1310,8 @@ function selfTestFixture() {
       { id: 1, name: "Top Layer" },
       { id: 2, name: "Bottom Layer" },
     ],
+    netNames: ["USB_DP", "USB_DM", "GND"],
+    components: [],
     segments: [
       {
         primitiveId: "p1",
@@ -1268,6 +1358,13 @@ async function main() {
     let options = parseArgs(process.argv.slice(2));
     if (options.selfTest) {
       options = mergeConstraintRecord(options, completeConstraintFixture());
+      options.humanAttestation = {
+        accepted: true,
+        requested: true,
+        reason: "self-test attestation",
+        revision: "self-test",
+        attestFile: "<self-test>",
+      };
       const report = analyze(selfTestFixture(), options, { kind: "self-test" });
       if (report.decision !== DECISIONS.PASS_WITH_EXCEPTIONS) {
         throw new Error(
@@ -1276,6 +1373,9 @@ async function main() {
             incomplete: report.checks.incompleteConstraints,
           })}`,
         );
+      }
+      if (report.fabricationRelease !== false) {
+        throw new Error("self-test must set fabricationRelease=false");
       }
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       return;
@@ -1292,28 +1392,35 @@ async function main() {
       bridgeHealth: bridge.health,
     });
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
-    if (options.output) await writeFile(options.output, serialized, "utf8");
+    if (options.output) {
+      const outputPath = resolveSafeOutputPath(options.output, {
+        force: options.force,
+      });
+      await writeFile(outputPath, serialized, "utf8");
+    }
     process.stdout.write(serialized);
-    if (report.decision === DECISIONS.FAIL) process.exitCode = 2;
-    else if (report.decision === DECISIONS.UNVERIFIED) process.exitCode = 3;
+    process.exitCode = applyDecisionExitCode(report.decision);
   } catch (error) {
     process.stderr.write(
       `${JSON.stringify(
         {
           error: error instanceof Error ? error.message : String(error),
           evidence: "RULE_CHECK",
+          fabricationRelease: false,
         },
         null,
         2,
       )}\n`,
     );
-    process.exitCode = 1;
+    process.exitCode = EXIT.ERROR;
   }
 }
 
 export {
   DECISIONS,
+  EXIT,
   analyze,
+  applyDecisionExitCode,
   completeConstraintFixture,
   collectorCode,
   constraintCompleteness,

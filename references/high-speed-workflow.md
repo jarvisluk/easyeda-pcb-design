@@ -16,6 +16,14 @@ Complete the baseline workflow in this skill first for schematic correctness, fo
 
 Run the baseline audit before and after high-speed edits. A high-speed audit cannot convert a failed baseline design into a pass.
 
+Pass the same revision-controlled constraint record to both audits. Discovery
+uses the complete PCB net list rather than only routed traces. Explicit
+interface declarations are authoritative; structural and name profiles are
+fallback candidate generators. Ambiguous clock, SDIO/QSPI, RGMII/RMII, CAN, or
+RS-485 candidates remain unresolved until edge rate, topology, impedance, and
+route length are classified. Protocol sidebands such as CEC, HPD, reset, wake,
+enable, LED, and VBUS are not promoted solely by their interface prefix.
+
 ## Constraint intake
 
 Record the constraints in the format defined by
@@ -25,62 +33,14 @@ Record the constraints in the format defined by
 {
   "classification": "CONTROLLED_HIGH_SPEED",
   "fabricator": "JLCPCB",
-  "stackup": {
-    "source": "FAB_CONFIRMED",
-    "sourceDocument": "fabricator stackup identifier",
-    "boardThicknessMm": 1.6,
-    "copperThicknessUm": 35,
-    "dielectricHeightMm": 0.18,
-    "dk": 4.1,
-    "lossTangent": 0.02,
-    "frequencyGhz": 1.0,
-    "layers": [
-      {"name": "Top", "role": "signal"},
-      {"name": "L2", "role": "ground"},
-      {"name": "L3", "role": "power"},
-      {"name": "Bottom", "role": "signal"}
-    ]
-  },
-  "interfaces": [
-    {
-      "name": "USB2",
-      "requirementsSource": "USB 2.0 specification and transceiver datasheet revision",
-      "dataRateGbps": 0.48,
-      "riseTimePs": 500,
-      "topology": "point-to-point",
-      "endpoints": ["U1.USB_DP/DM", "J1.D+/D-"],
-      "protection": {
-        "disposition": "IMPLEMENTED",
-        "parts": ["D1"]
-      },
-      "testPoints": [],
-      "maxStubMil": 20,
-      "termination": {
-        "type": "internal",
-        "owner": "U1 transceiver",
-        "source": "U1 datasheet revision and section"
-      },
-      "acCouplingNotApplicable": true,
-      "connectorOrCableModel": "connector part and compliant cable model",
-      "referenceBySignalLayer": {"Top": "L2:GND"},
-      "nets": ["USB_DP", "USB_DM"],
-      "targetDiffOhm": 90,
-      "tolerancePercent": 10,
-      "pairs": [
-        {"positive": "USB_DP", "negative": "USB_DM", "maxSkewMil": 20}
-      ]
-    }
-  ],
-  "evidence": {
-    "impedance": {
-      "status": "FAB_CONFIRMED",
-      "source": "coupon record"
-    }
-  }
+  ...see full schema in high-speed-constraints.md...
 }
 ```
 
-Reject silent defaults. Mark unknown Dk, dielectric height, copper thickness, soldermask, or etch compensation as assumptions.
+Use the complete JSON schema and evidence rules in
+[high-speed-constraints.md](high-speed-constraints.md). Reject silent defaults.
+Mark unknown Dk, dielectric height, copper thickness, soldermask, or etch
+compensation as assumptions.
 
 ## Placement extension
 
@@ -125,12 +85,16 @@ Run:
 Run `node scripts/easyeda_audit_tests.mjs` after modifying either audit script.
 
 Any routing, layer, via, stackup, connector, or copper change invalidates downstream high-speed checks.
+The report carries a normalized design fingerprint. A baseline audit rejects a
+report from another project/document, an older geometry/copper revision, a
+different constraint record, or a report that omits any detected candidate net.
 
 ## Exit gates
 
 Require all applicable items:
 
-- stackup source and assumption status recorded;
+- stackup source and assumption status recorded with on-disk artifact or
+  `--user-attested-evidence`;
 - target impedance and tolerance recorded;
 - high-speed nets and pairs explicitly listed;
 - critical signals reference a continuous plane without unreviewed splits or voids;
@@ -141,6 +105,10 @@ Require all applicable items:
 - connector, protection, BGA, and via launches reviewed;
 - analytical results are not presented as field-solver or measurement evidence;
 - fabricator capability and impedance-coupon requirements confirmed;
-- solver/measurement evidence present when the classification is high-risk SI.
+- solver/measurement evidence present when the classification is high-risk SI
+  or the audit auto-promotes the interface (USB 3 / PCIe / DDR / multi-gigabit).
 
 If a required solver or measurement is absent, return `UNVERIFIED FOR FABRICATION`.
+
+Never return bare `PASS`. Never describe audit output as fab authorization.
+`PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS` still has `fabricationRelease: false`.

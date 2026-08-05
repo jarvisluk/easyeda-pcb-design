@@ -13,7 +13,9 @@ Read the matching `easyeda-api` reference before use:
 
 - `DMT_Project` — current project state;
 - `DMT_SelectControl` — active document state;
+- `PCB_Net` — complete PCB net-name list, including unrouted nets;
 - `PCB_Layer` — layer names, types, and active layer;
+- `PCB_PrimitiveComponent` — placement state included in the design fingerprint;
 - `PCB_PrimitiveLine` — routed segments and lengths;
 - `PCB_PrimitiveArc` — arc endpoints, angle, width, layer, and net;
 - `PCB_PrimitivePolyline` and `IPCB_Polygon` — discretized polyline paths;
@@ -58,8 +60,18 @@ The bundled bridge audit intentionally does not claim to prove:
 - S-parameters or eye-mask compliance;
 - field coupling or glass-weave effects.
 
+The baseline and high-speed collectors must normalize the same project UUID,
+document UUID, layers, complete net list, component placement, routed geometry,
+vias, and copper state. A cleared high-speed report is valid only when its
+design fingerprint matches the active PCB and it covers every detected
+high-speed candidate. Missing legacy fingerprints are treated as stale.
+
 Escalate those items to manual geometry review or an external solver.
 
 Before executing a live audit, query `/eda-windows`. Require `--window-id` when
 more than one window is connected; never silently audit whichever window was
 last active.
+
+The current bridge execution sandbox passes `eda` but does not expose global
+enum objects. Collector generation may interpolate a value only after reading
+the exact bundled enum reference; it must never guess a numeric enum value.

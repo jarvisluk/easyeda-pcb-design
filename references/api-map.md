@@ -1,5 +1,19 @@
 # EasyEDA API map for general design
 
+This file lists **names only**. Before any live call, open the matching
+`easyeda-api` class/enum document. If the companion skill or bridge is missing,
+stop — do not invent signatures.
+
+## Safety
+
+- Confirm project + active document before writes.
+- Require explicit user confirmation before delete, mass net change, or bulk
+  overwrite operations.
+- After create/modify, read back IDs and state; do not assume success from a
+  void return.
+- Manufacturing export (`PCB_ManufactureData`) only after design validation and
+  with user intent to generate outputs.
+
 ## Document and project
 
 - `DMT_Project` — open/current project state.

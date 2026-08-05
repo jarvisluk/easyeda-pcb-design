@@ -15,6 +15,11 @@ screening, but they cannot produce a fabrication-pass decision.
 
 Do not use silent interface defaults. Record the source for every limit.
 
+The baseline audit accepts this same file through
+`--high-speed-constraints FILE`. Nets listed under interfaces, pairs, and
+length groups are authoritative high-speed declarations even when their names
+are proprietary and even when they are not routed yet.
+
 ## Required record
 
 Use this structure:
@@ -134,10 +139,29 @@ For every interface, explicitly record:
 - AC-coupling owner and source, or `acCouplingNotApplicable`;
 - connector/cable model, or `connectorNotApplicable`.
 
+When applicable, also record `frequencyGhz`, `rfLaunch`,
+`denseBgaEscape`, `denseViaField`, `validationRequirement`, and
+`complianceRequirement`. RF frequency/launches, dense escapes, or explicit
+eye-mask, S-parameter, insertion-loss, return-loss, crosstalk, TDR, or VNA
+requirements force high-risk SI treatment.
+
 ## Evidence fields
 
-Every evidence object requires both a recognized `status` and a non-empty
-`source`, `artifact`, or `reference`.
+Every evidence object requires a recognized `status` and either:
+
+1. an on-disk `artifact` or `artifactPath` that exists when the audit runs, or
+2. **human** attestation: `--user-attested-evidence` **and**
+   `EASYEDA_AUDIT_USER_ATTEST=YES` (human shell only) **and** `--attest-file`
+   containing `I ATTEST EVIDENCE FOR PCB REVISION: <id>`, plus a non-empty
+   source string.
+
+Agents must never export the env var or write the attest file.
+
+Free-text sources alone do **not** close gates. Do not invent coupon paths,
+solver dumps, or fabricator IDs.
+
+Stackup with `source: "FAB_CONFIRMED"` likewise requires an existing
+`artifact`/`artifactPath` or accepted human attestation with `sourceDocument`.
 
 - Use `FAB_CONFIRMED` for fabricator stackup or coupon evidence.
 - Use `ANALYTICAL_ESTIMATE` only for closed-form calculations; it cannot close
@@ -147,20 +171,37 @@ Every evidence object requires both a recognized `status` and a non-empty
 - Use `SOLVER_VERIFIED` or `MEASUREMENT_VERIFIED` for solver or laboratory
   artifacts.
 
-Require `solverOrMeasurement` for `HIGH_RISK_SI`.
+Require `solverOrMeasurement` for `HIGH_RISK_SI`. The audit also **forces**
+high-risk treatment when an interface name/profile matches USB 3 / PCIe / DDR /
+HDMI / SerDes / multi-gigabit patterns or `dataRateGbps >= 1`, even if the
+record still says `CONTROLLED_HIGH_SPEED`.
+
+`requireGroundPour` defaults to true. Setting it false requires
+`exceptionNote` in the JSON or `--exception-note` on the CLI.
 
 ## Decision behavior
 
+- Bare `PASS` is never emitted. `fabricationRelease` is always false.
 - Return `FAIL` for observed violations such as missing declared nets, DRC
   errors, excessive skew, branches in point-to-point nets, mismatched pair
   layers or widths, or missing close return vias.
 - Return `UNVERIFIED FOR FABRICATION` when required constraints or evidence are
-  absent.
+  absent, free-text evidence lacks attestation/artifacts, or high-risk SI lacks
+  solver/measurement evidence.
 - Return `PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS` when deterministic
-  checks pass and every non-API-verifiable gate has revision-linked evidence.
+  checks pass and every non-API-verifiable gate has artifact-backed or
+  user-attested evidence. This is **not** a fab release.
 - Treat any routing, stackup, layer, via, connector, protection, or copper
   change as invalidating downstream evidence.
+- A cleared report is bound to project UUID, document UUID, normalized design
+  fingerprint, constraint fingerprint, and the exact high-speed-net coverage.
+  Reports without those bindings cannot clear the baseline audit.
 
-For automation, exit code `0` means a non-failing completed audit, `2` means
-`FAIL`, `3` means `UNVERIFIED FOR FABRICATION`, and `1` means the audit could
-not execute.
+For automation, exit codes are:
+
+- `1` — audit could not execute
+- `2` — `FAIL`
+- `3` — `UNVERIFIED FOR FABRICATION`
+- `4` — `PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS` (not fab release)
+
+Do not treat exit code `4` as authorization to fabricate.
