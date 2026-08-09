@@ -5,10 +5,10 @@
 ## Install prompt (copy into your Agent)
 
 ```text
-Please install the easyeda-pcb-design package in this workspace as an Agent Skill I can use.
+Please install `skills/easyeda-pcb-design/` from this workspace as an Agent Skill I can use.
 
 Requirements:
-1. Install it using this repo’s skill layout (entry point: SKILL.md).
+1. Install only `skills/easyeda-pcb-design/` (entry point: its `SKILL.md`).
 2. After install, confirm the skill name is available and tell me how to invoke it later.
 3. Do not change the skill’s design rules or reference docs unless a path/config tweak is required for install.
 4. If the companion easyeda-api skill is also required, say whether it’s ready and what’s missing.
@@ -23,6 +23,7 @@ Use AI with **EasyEDA Pro** (JLCPCB EDA) to design schematics and PCBs—from ev
 ## What you can do
 
 - Draw schematics, place parts, route, and pour copper
+- Handle keepouts, feeds, matching, and verification for RF-module and host-board PCB antennas
 - Run a design review pass so fewer items are missed
 - Load high-speed guidance only when the board actually needs it
 

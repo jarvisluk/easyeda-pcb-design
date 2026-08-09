@@ -1,0 +1,6 @@
+# Local PCB test designs and generated process evidence.
+/designs/
+
+# Legacy root-level audit artifacts; keep regenerated copies local.
+/stm32f103-*-audit.json
+/stm32f103-project-audit.md

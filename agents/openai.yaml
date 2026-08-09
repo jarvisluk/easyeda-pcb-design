@@ -1,4 +1,0 @@
-interface:
-  display_name: "嘉立创 PCB 设计"
-  short_description: "嘉立创EDA端到端原理图、布局布线与高速PCB设计指南"
-  default_prompt: "Use $easyeda-pcb-design to guide this EasyEDA design from requirements through schematic, placement, routing, and final verification, loading specialized checks only when needed."
