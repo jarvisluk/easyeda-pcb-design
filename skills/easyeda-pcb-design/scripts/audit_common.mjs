@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -18,6 +25,7 @@ const DECISION_VALUES = Object.freeze({
   FAIL: "FAIL",
   UNVERIFIED: "UNVERIFIED FOR FABRICATION",
 });
+const DESIGN_FINGERPRINT_SCHEMA_VERSION = 5;
 
 const DEFAULT_BRIDGE_PORTS = Object.freeze(
   Array.from({ length: 10 }, (_, index) => 49620 + index),
@@ -40,6 +48,131 @@ Next step: <concrete action>
 
 function nonemptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateNetlistCompareExceptionArtifact(artifact, artifactPath) {
+  const commonValid =
+    artifact?.kind === "easyeda-manufacturing-netlist-comparison" &&
+    artifact?.comparison?.match === true &&
+    artifact?.manufacturingDecision === "MATCH" &&
+    artifact?.fabricationRelease === false &&
+    nonemptyString(artifact?.project?.uuid) &&
+    nonemptyString(artifact?.schematic?.uuid) &&
+    nonemptyString(artifact?.pcb?.uuid);
+  if (!commonValid) {
+    throw new Error(
+      "netlist comparison report must prove manufacturing MATCH, comparison.match=true, exact project/schematic/PCB UUIDs, and fabricationRelease=false",
+    );
+  }
+
+  const literalMatch = artifact.decision === "MATCH";
+  const verifiedCacheException =
+    artifact.decision === "MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION" &&
+    artifact?.nativeCacheException?.status === "VERIFIED" &&
+    Array.isArray(artifact?.nativeCacheException?.issues) &&
+    artifact.nativeCacheException.issues.length === 0 &&
+    artifact?.pcbDataPlaneIntegrity?.match === true &&
+    Array.isArray(artifact?.nativeFileComparison) &&
+    artifact.nativeFileComparison.length === 0;
+  if (!literalMatch && !verifiedCacheException) {
+    throw new Error(
+      "netlist comparison report must be literal MATCH or satisfy the complete verified native-cache-exception contract",
+    );
+  }
+
+  return {
+    reason: literalMatch
+      ? "strict netlist comparison reported literal MATCH"
+      : artifact.nativeCacheException.interpretation,
+    artifactPath,
+    artifact: {
+      kind: artifact.kind,
+      decision: artifact.decision,
+      manufacturingDecision: artifact.manufacturingDecision,
+      projectUuid: artifact.project.uuid,
+      schematicUuid: artifact.schematic.uuid,
+      pcbUuid: artifact.pcb.uuid,
+      comparisonMatch: true,
+      pcbDataPlaneMatch: artifact?.pcbDataPlaneIntegrity?.match ?? null,
+      nativeFileComparisonDifferenceCount:
+        Array.isArray(artifact?.nativeFileComparison)
+          ? artifact.nativeFileComparison.length
+          : null,
+      nativeCacheExceptionStatus:
+        artifact?.nativeCacheException?.status || null,
+    },
+  };
+}
+
+function freeCopperPrimitiveIds(drcLeaves = []) {
+  const ids = [];
+  for (const item of drcLeaves) {
+    if (
+      item?.isFree !== true &&
+      item?.explanation?.param?.type !== "ConnectError" &&
+      item?.explanation?.errData?.errorType !== "No Connection"
+    ) {
+      continue;
+    }
+    if (Array.isArray(item.objs)) ids.push(...item.objs);
+    else if (nonemptyString(item.objs)) ids.push(item.objs);
+    ids.push(item?.explanation?.errData?.obj1);
+  }
+  return new Set(ids.filter(nonemptyString));
+}
+
+function analyzePourConnectivity(pour = {}, freeCopperIds = new Set()) {
+  const solidFillIds = [
+    ...new Set(
+      (Array.isArray(pour.solidFillIds) ? pour.solidFillIds : []).filter(
+        nonemptyString,
+      ),
+    ),
+  ];
+  const solidFillCount = Number.isFinite(Number(pour.solidFillCount))
+    ? Number(pour.solidFillCount)
+    : 0;
+  const fillCount = Number.isFinite(Number(pour.fillCount))
+    ? Number(pour.fillCount)
+    : 0;
+  const freeSolidFillIds = solidFillIds.filter((id) => freeCopperIds.has(id));
+  const connectedSolidFillIds = solidFillIds.filter(
+    (id) => !freeCopperIds.has(id),
+  );
+  const solidFillIdCoverageComplete =
+    solidFillCount > 0 &&
+    fillCount >= solidFillCount &&
+    solidFillIds.length === solidFillCount;
+  const fillConnectivityProven =
+    solidFillIdCoverageComplete && freeSolidFillIds.length === 0;
+  let islandStatus = "CONNECTED_BY_FILL_ID_AND_DRC";
+  if (!pour.hasCopper) islandStatus = "NO_GENERATED_COPPER";
+  else if (fillCount <= 0) islandStatus = "NO_GENERATED_FILL_RECORDS";
+  else if (solidFillCount <= 0) islandStatus = "NO_SOLID_FILL";
+  else if (!solidFillIdCoverageComplete) {
+    islandStatus = "UNVERIFIED_SOLID_FILL_ID_COVERAGE";
+  } else if (freeSolidFillIds.length) islandStatus = "FREE_COPPER_DETECTED";
+  const passed = Boolean(
+    pour.hasCopper &&
+      fillCount > 0 &&
+      solidFillCount > 0 &&
+      fillConnectivityProven,
+  );
+  return {
+    ...pour,
+    fillCount,
+    solidFillCount,
+    solidFillIds,
+    connectedSolidFillIds,
+    freeSolidFillIds,
+    solidFillIdCoverageComplete,
+    fillConnectivityProven,
+    islandStatus,
+    preserveSilosStateIgnored: Boolean(
+      passed && pour.preserveSilos && fillConnectivityProven,
+    ),
+    passed,
+  };
 }
 
 function resolveSafeOutputPath(output, { force = false, cwd = process.cwd() } = {}) {
@@ -77,7 +210,14 @@ function existingArtifactPath(candidate, { cwd = process.cwd() } = {}) {
   const resolved = path.isAbsolute(candidate)
     ? path.resolve(candidate)
     : path.resolve(cwd, candidate);
-  return existsSync(resolved) ? resolved : undefined;
+  try {
+    const stat = statSync(resolved);
+    if (!stat.isFile() || stat.size <= 0) return undefined;
+    accessSync(resolved, fsConstants.R_OK);
+    return resolved;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -459,6 +599,7 @@ function designFingerprintPayload(raw = {}) {
       holeDiameter: item.holeDiameter ?? null,
       viaType: item.viaType ?? null,
       blindViaRule: item.blindViaRule ?? null,
+      solderMaskExpansion: item.solderMaskExpansion ?? null,
     }))
     .sort(primitiveSort);
   const pours = (raw.pours || [])
@@ -466,19 +607,74 @@ function designFingerprintPayload(raw = {}) {
       primitiveId: item.primitiveId ?? null,
       net: item.net || "",
       layer: item.layer ?? null,
+      name: item.name || "",
+      lineWidth: item.lineWidth ?? null,
+      fillMethod: item.fillMethod ?? null,
+      priority: item.priority ?? null,
+      complexPolygon: item.complexPolygon ?? null,
       preserveSilos: Boolean(item.preserveSilos),
       hasCopper: Boolean(item.hasCopper),
       fillCount: item.fillCount ?? null,
       solidFillCount: item.solidFillCount ?? null,
+      solidFillRecords: item.solidFillRecords ?? null,
     }))
     .sort(primitiveSort);
   const components = (raw.components || [])
     .map((item) => ({
       primitiveId: item.primitiveId ?? null,
       designator: item.designator || "",
+      uniqueId: item.uniqueId || null,
+      name: item.name || null,
+      manufacturer: item.manufacturer || null,
+      manufacturerPartNumber: item.manufacturerPartNumber || null,
+      supplier: item.supplier || null,
+      supplierPartNumber: item.supplierPartNumber || null,
+      addIntoPcb: item.addIntoPcb ?? null,
+      footprint: item.footprint
+        ? {
+            libraryUuid: item.footprint.libraryUuid ?? null,
+            uuid: item.footprint.uuid ?? null,
+            name: item.footprint.name ?? null,
+          }
+        : null,
+      model3D: item.model3D
+        ? {
+            libraryUuid: item.model3D.libraryUuid ?? null,
+            uuid: item.model3D.uuid ?? null,
+            name: item.model3D.name ?? null,
+          }
+        : null,
       layer: item.layer ?? null,
       x: item.x ?? null,
       y: item.y ?? null,
+      rotation: item.rotation ?? null,
+      bbox: item.bbox
+        ? {
+            minX: item.bbox.minX ?? null,
+            minY: item.bbox.minY ?? null,
+            maxX: item.bbox.maxX ?? null,
+            maxY: item.bbox.maxY ?? null,
+          }
+        : null,
+    }))
+    .sort(primitiveSort);
+  const pads = (raw.pads || [])
+    .map((item) => ({
+      primitiveId: item.primitiveId ?? null,
+      parentComponentPrimitiveId: item.parentComponentPrimitiveId ?? null,
+      designator: item.designator || "",
+      padNumber: item.padNumber || "",
+      net: item.net || "",
+      layer: item.layer ?? null,
+      x: item.x ?? null,
+      y: item.y ?? null,
+      rotation: item.rotation ?? null,
+      pad: item.pad ?? null,
+      specialPad: item.specialPad ?? null,
+      hole: item.hole ?? null,
+      padType: item.padType ?? null,
+      solderMaskAndPasteMaskExpansion:
+        item.solderMaskAndPasteMaskExpansion ?? null,
     }))
     .sort(primitiveSort);
   const layers = (raw.layers || [])
@@ -496,11 +692,13 @@ function designFingerprintPayload(raw = {}) {
   ]).sort();
 
   return {
+    fingerprintSchemaVersion: DESIGN_FINGERPRINT_SCHEMA_VERSION,
     projectUuid: raw.project?.uuid || null,
     documentUuid: raw.document?.uuid || null,
     layers,
     netNames,
     components,
+    pads,
     segments,
     vias,
     pours,
@@ -958,8 +1156,10 @@ export {
   ATTEST_LINE_RE,
   COMPLETION_TEMPLATE,
   DECISION_VALUES,
+  DESIGN_FINGERPRINT_SCHEMA_VERSION,
   DEFAULT_BRIDGE_PORTS,
   EXIT,
+  analyzePourConnectivity,
   applyDecisionExitCode,
   checkCompanion,
   constraintFingerprint,
@@ -973,6 +1173,7 @@ export {
   fetchJson,
   findBridge,
   findEasyedaApiSkill,
+  freeCopperPrimitiveIds,
   highRiskInterfaceReasons,
   highSpeedDiscovery,
   highSpeedNetHints,
@@ -984,4 +1185,5 @@ export {
   resolveManufacturingReview,
   resolveSafeOutputPath,
   resolveWindow,
+  validateNetlistCompareExceptionArtifact,
 };

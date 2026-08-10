@@ -1,4 +1,4 @@
 interface:
   display_name: "嘉立创 PCB 设计"
-  short_description: "按起始状态分流嘉立创EDA原理图、PCB续作与核验"
-  default_prompt: "Use $easyeda-pcb-design to classify the existing design as none, schematic, unfinished PCB, or routed PCB, then select scope and mode, follow only the routed workflow, and explain verification results naturally."
+  short_description: "先确认需求与主要功能，再闭环焊盘完整布局、布线和制造核验"
+  default_prompt: "Use $easyeda-pcb-design to classify the EasyEDA design state, clear requirements and primary functions, then prove pad-complete placement closure before routing and verify only the requested design and release gates."

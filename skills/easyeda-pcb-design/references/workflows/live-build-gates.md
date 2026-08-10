@@ -91,13 +91,15 @@ the latter two are never geometry-only PCB repairs.
 Advance in this order:
 
 1. `COMPANION_READY`
-2. `SCHEMATIC_IDENTITY_STABLE`
-3. `SCHEMATIC_VERIFIED`
-4. `PCB_SYNC_MATCH`
-5. `ROUTING_CANARY_CLEAR`
-6. `FULL_ROUTING_CLEAR`
-7. `COPPER_CANARY_CLEAR`
-8. `DESIGN_CLOSURE`
+2. `PROJECT_BOUND`
+3. `PRIMARY_FUNCTIONS_CONFIRMED`
+4. `SCHEMATIC_IDENTITY_STABLE`
+5. `SCHEMATIC_VERIFIED`
+6. `PCB_SYNC_MATCH`
+7. `ROUTING_CANARY_CLEAR`
+8. `FULL_ROUTING_CLEAR`
+9. `COPPER_CANARY_CLEAR`
+10. `DESIGN_CLOSURE`
 
 Do not skip a gate because a create, modify, import, or rebuild call returned a
 truthy value. A gate closes only after semantic readback from the saved design.
@@ -107,6 +109,51 @@ next diagnostic. Do not create another production candidate as a retry.
 Advance only as far as the selected work scope requires. A schematic-only build
 stops after `SCHEMATIC_VERIFIED`; it does not create a PCB to satisfy later
 states.
+
+`PRIMARY_FUNCTIONS_CONFIRMED` requires the structured baseline and post-core-part
+research process in [entry-routing.md](entry-routing.md), plus an append-only
+`easyeda-requirements-baseline-check` report with `cleared: true`, the current
+baseline revision, and an exact matching `inputFingerprint`. Prose in
+`brief.md`, chat, or a handoff cannot substitute for that report. The baseline
+must distinguish available silicon capabilities from fitted board functions,
+expose material alternatives and tradeoffs, explicitly name omitted
+user-facing functions, and record user confirmation, an already-explicit
+requirement, or delegated tradeoff authority. Project authorization is not
+product-feature approval. Do not commit the full schematic or connector
+footprints while a material interface, power, programming, radio, control, or
+expansion choice remains unresolved.
+
+`SCHEMATIC_VERIFIED` requires the saved/reopened schematic fingerprint, ERC,
+identity, exact manufacturer part numbers and footprints, and a cleared
+component-selection evidence record under
+[component-selection-evidence.md](component-selection-evidence.md). An
+inaccessible, failed, unreadable, mismatched, stale, or unbound governing source
+blocks this gate even when ERC is clean.
+
+It also requires the presentation gate in
+[schematic-presentation.md](schematic-presentation.md). Run the geometry screen
+and exact-page visual inspection after the first complete functional block and
+again before handoff; do not defer either until PCB completion. A
+`DEGRADED_LABEL_STUB_PATTERN`, unresolved `REVIEW_REQUIRED`, or a page whose
+local circuits can only be reconstructed from repeated labels blocks
+`SCHEMATIC_VERIFIED` even when ERC and the exported netlist are clean.
+
+For an existing project, `PROJECT_BOUND` requires exact project UUID and tree
+readback. For a no-design build that must create its project, first preflight
+the intended workspace/team and enumerate the target team's project UUIDs.
+Because `DMT_Project.createProject()` is beta and there is no companion
+project-deletion API, use the final production name for one capability-qualified
+create transaction rather than creating a disposable project. Enumerate again
+even after an `undefined` return, bind and inspect any committed UUID, and
+require an empty design state: either a zero-document tree or a semantically
+blank default scaffold qualified as below. If no project was committed, allow
+only the single hypothesis-specific retry defined under Failure escalation.
+Continued absence of a UUID blocks live construction unless the user explicitly
+authorizes one final-named UI creation attempt. Use UI only for that creation,
+open it in a new window when the prior project may be unsaved, then return to
+the companion and prove exact project/document UUIDs plus blank schematic and
+PCB semantics before design writes. Do not substitute a similar pre-existing
+project or use filesystem/source synthesis.
 
 ## Existing-schematic modification state machine
 
@@ -137,6 +184,11 @@ reopen the schematic, and require:
 - an exported-netlist and primitive delta equal to the declared change;
 - no unintended rail, pin, net, no-connect, or footprint/pad-map change;
 - schematic DRC/ERC with no new unexplained error;
+- a rerun presentation screen and exact-page visual review when the transaction
+  changes component positions, wires, labels, ports, buses, or annotations;
+- regenerated component-selection evidence bound to the post-edit fingerprint
+  when the change affects a part, package, footprint, source revision, or sourced
+  requirement;
 - all earlier schematic-to-PCB handoff, synchronization, and dependent PCB
   evidence explicitly marked stale.
 
@@ -148,6 +200,16 @@ identity is missing or inconsistent, stop and classify the task as identity
 repair or reconstruction before changing the design.
 
 ## Existing-board continuation state machine
+
+If a saved board was changed outside this state machine and no pre-edit semantic
+capture or tested inverse exists, do not retroactively claim a bounded repair.
+Either restore the last known-good native revision and replay the change under
+the repair gates, or treat the current saved board as a new unfinished-board
+baseline. In the latter case record the unverified transaction history, bind the
+current identity/netlist, and reclose every affected handoff, constraint,
+stackup, placement, copper, routing-canary, and DRC gate before continuing. A
+current clean result can qualify the current state; it cannot manufacture
+missing pre-change evidence.
 
 Advance unfinished PCB work in this order:
 
@@ -167,12 +229,14 @@ detailed DRC. Record which placement and geometry is committed, which work is
 incomplete, and the first incomplete dependency gate. A semantic baseline is
 evidence, not a restorable backup.
 
-Require manufacturing and native synchronization `MATCH`; a stale comparison
-is not sufficient for continuation. Reverify earlier gates whose evidence is
-missing or invalidated, but do not recreate components or replay geometry whose
-current evidence remains valid. Before moving an unfinished component, preserve
-its exact transform and a tested inverse. Record every newly created primitive
-ID, net, layer, and intended endpoints.
+Require manufacturing and native synchronization `MATCH`, or the exact
+`PCB_SYNC_VERIFIED_CACHE_EXCEPTION` result defined under PCB synchronization
+below; an unclassified stale comparison is not sufficient for continuation.
+Reverify earlier gates whose evidence is missing or invalidated, but do not
+recreate components or replay geometry whose current evidence remains valid.
+Before moving an unfinished component, preserve its exact transform and a
+tested inverse. Record every newly created primitive ID, net, layer, and
+intended endpoints.
 
 Use the first new placement or route in each unproven class as a canary. After
 each logical transaction, save/reopen and require:
@@ -262,6 +326,22 @@ sequence as unqualified until it has a matching capability record. Run unknown
 or beta document-tree write sequences in a dedicated probe project, never in
 the user's production project.
 
+Project creation is the exception to the dedicated-probe-location rule because
+the probe project does not exist yet and cannot be deleted through the
+companion. Qualify it as the bounded production-intended transaction described
+under the new-construction `PROJECT_BOUND` gate. A failed create with no
+enumerated UUID is a non-commit; a created but unexpected project tree is a
+failed live candidate that must be preserved and reported because automatic
+project cleanup is outside the authorization boundary.
+
+After the API retry ceiling, explicit user authorization may qualify a single
+UI project-creation recovery. Record the UI result, then use companion readback
+as authority. A known default scaffold closes empty-design-state only when its
+schematic has zero `part` components and zero wires and its PCB has zero
+components, lines, arcs, vias, Pours/fills, and regions. Bind and reuse its
+blank Schematic and PCB rather than creating duplicates; preserve and stop on
+any unexpected content.
+
 The probe must record:
 
 - application, companion, and bridge versions when available;
@@ -322,6 +402,65 @@ Require manufacturing identity/pin-net equivalence, stable nonempty IDs, no
 divergent nonempty internal PCB netlist views, and native comparison `MATCH`.
 An unavailable or stale native comparison blocks routing. Do not route first
 and plan to fix synchronization later.
+
+EasyEDA's beta document-UUID comparator can also produce a proven false
+negative: every schematic net is reported with a populated first side and an
+empty PCB side even though the saved PCB data is populated. After the normal
+bounded synchronization attempts, save/switch/reopen both documents and run the
+same command with `--allow-native-cache-exception`. Accept only its exact
+`MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION` decision. The script requires all
+of these independent views to agree with the schematic:
+
+- manufacturing component identity, core properties, and every pin net;
+- every nonempty internal PCB JLCEDA netlist view;
+- the direct PCB net-name set and every numbered component-pad net, including
+  consistent duplicate physical pads that share one logical pad number;
+- native `SYS_Tool.netlistComparison()` on the two exported File objects;
+- a document-UUID mismatch consisting only of the complete expected net set,
+  with every first side populated and every second side empty, and no component
+  or partial/asymmetric difference.
+
+Any missing/extra component, net, pad number, pin-net or core-property
+difference; empty/divergent internal view; nonempty File comparison; component
+difference; partial net set; or unavailable evidence rejects the exception.
+Record the gate as `PCB_SYNC_VERIFIED_CACHE_EXCEPTION`, never as literal
+`PCB_SYNC_MATCH`. Under `USER_OWNED`, obtain explicit acceptance before routing;
+`AI_DEDICATED` standing project authorization covers the exception when needed
+for the stated objective. It permits routing canaries and design closure only;
+it does not erase the raw beta-comparator result, waive later connectivity/DRC
+checks, or support a fabrication-release conclusion by itself.
+
+Synchronization clearance still does not authorize routing. After the actual
+placement is saved/reopened, require the independent
+`PLACEMENT_CLEAR_FOR_ROUTING` gate in
+[placement-closure.md](../layout/placement-closure.md). A clean native or
+manufacturing comparison cannot waive ordinary via/pad intrusion, own-pad
+courtyard escape, foreign pad/courtyard overlap, module escape, operator access,
+connector, or BOM-policy findings.
+
+For this exception path, also run `easyeda_identity_preflight.mjs` with the
+schematic page, PCB UUID, and expected part count but without
+`--schematic-uuid`/`--require-native-match`; require its ordinary `MATCH` for
+live schematic identity plus nonempty, nondivergent PCB internal identity. Bind
+that artifact and the strict comparator artifact to the same project, schematic
+page, PCB UUID, and saved/reopened revision. The comparator artifact is the sole
+authority for the separately preserved native false-negative classification.
+
+At final PCB audit, pass the same strict comparator artifact directly to the
+baseline audit rather than restating it in a constraint record:
+
+```bash
+node scripts/easyeda_design_audit.mjs \
+  --netlist-compare-report <project>/evidence/netlist/final-sync.json \
+  --component-evidence <project>/evidence/audits/component-selection.json \
+  --placement-audit-report <project>/evidence/audits/placement-closure.json \
+  --output <project>/evidence/audits/pcb-final.json
+```
+
+The audit validates the complete comparator decision and exact project/PCB
+binding. It may clear only a sole native `Netlist Error` whose rule is `Import
+Changes`; it retains the raw leaf in the report. Any other DRC leaf, weak or
+malformed artifact, or UUID mismatch keeps the result failed.
 
 ## Revision budget and manifest
 
@@ -388,14 +527,24 @@ Run connectivity, routing geometry, and native DRC immediately. Require zero
 unexpected spacing, via, layer, differential, and connection errors. A failed
 canary is repaired or rolled back before more nets are routed.
 
+For the beta autorouter, treat a zero-duration all-requested-nets-failed result
+as a failed capability canary. Prove the route geometry is unchanged, stop
+option-key retries, and use reviewed manual routing. Whether routing is manual
+or automatic, save/reopen and compare geometry/topology; normalized or merged
+track IDs replace the create-returned IDs as final authority.
+
 For PCB continuation, preserve existing geometry and use the first added path in
 each previously unproven routing class as its canary. A passing canary authorizes
 expansion only within that class and the declared incomplete work; it does not
 authorize replacing pre-existing paths.
 
 For copper, create or rebuild one intended reference pour first. Read back its
-source Pour and generated Poured instance, solid-fill IDs, connectivity, island
-state, and detailed DRC. Only then apply the proven sequence to other layers.
+source Pour and generated Poured instance, require unique-ID coverage for every
+solid fill, and correlate each ID with connectivity, island state, and detailed
+DRC. Resolve every disconnected sibling region before applying the proven
+sequence to other layers.
+The immediate rebuild fill count is provisional. Save/switch/reopen and repeat
+the source-Pour plus every derived-fill readback before closing the canary.
 
 ## Failure escalation
 
@@ -407,6 +556,12 @@ Use this retry ceiling for the same failed gate and recorded hypothesis:
    diagnostic candidate.
 3. If the same gate still fails: stop and report the blocker. Do not create a
    second diagnostic candidate or cascade through alternate bulk APIs.
+
+A native menu or Computer Use action that performs the same schematic-to-PCB
+synchronization is another bulk synchronization path, not a harmless UI
+fallback. Do not invoke it after the API retry ceiling; UI recovery in this
+skill is limited to the separately qualified `PROJECT_BOUND` project-creation
+exception.
 
 `importChanges()` and `setNetlist()` are separate high-risk operations. Under
 `USER_OWNED` they require separate confirmation; under `AI_DEDICATED` the

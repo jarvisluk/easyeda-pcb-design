@@ -5,11 +5,9 @@ description: Guide, create, continue, modify, and review schematic-only, PCB-onl
 
 # EasyEDA PCB Design
 
-Act as a PCB design guide first. Lead the work from design intent to an
-implemented board, explain consequential choices, and use audits as closure
-tools rather than as the center of every task.
+Lead intent through implementation; explain decisions and close with audits.
 
-**A clean DRC or audit is not a fabrication release.** Never tell the user a board is ready to fab from script output alone.
+**A clean DRC/audit is not a fabrication release.** Never claim readiness from script output alone.
 
 ## Select entry state, scope, and mode
 
@@ -57,7 +55,8 @@ Do not use PASS/FAIL language for ordinary guidance or work in progress.
 ## Follow the selected lifecycle
 
 Read [references/workflows/entry-routing.md](references/workflows/entry-routing.md) for entry-state routing,
-scope boundaries, shared intake, handoff, change propagation, and live gates.
+scope boundaries, the structured requirements/primary-functions baseline,
+handoff, change propagation, and live gates.
 Then load:
 
 - **Schematic only:** [references/workflows/schematic-workflow.md](references/workflows/schematic-workflow.md).
@@ -67,8 +66,7 @@ Then load:
 - **End to end:** both workflow references in order; close the handoff gate
   before loading placement/routing details.
 
-For an existing-design review, enter the review branch for that scope rather
-than replaying its construction steps. A schematic-only review may assess
+For existing-design review, use that scope's review branch. A schematic-only review may assess
 electrical intent, parts, ERC, and handoff readiness, but must not infer PCB
 placement, routing, copper, mechanical closure, or manufacturing readiness.
 
@@ -101,6 +99,9 @@ for the operation classes and evidence required by each profile.
 ## Use the EasyEDA companion for live work
 
 Use `easyeda-api` (EasyEDA API skill / bridge) for every live EasyEDA operation.
+The sole exception is final-named project creation through UI after a documented
+API non-commit and explicit user authorization; return immediately to companion
+UUID binding and semantic readback before any design edit.
 Read [references/api/api-map.md](references/api/api-map.md), the exact companion API
 documentation, and [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md)
 before a live build or substantial modification. Classify the transaction as
@@ -114,6 +115,10 @@ node scripts/check_companion.mjs
 Require exit code `0` and `ready: true`; otherwise stop. Confirm project and
 document UUIDs before writes, await every operation, and trust semantic readback
 from the saved/reopened design rather than a truthy return.
+For a no-design live build, close the project-creation/binding gate in
+`live-build-gates.md` before schematic construction; project creation is itself
+a beta document-tree transaction and cannot be treated as an unqualified setup
+step.
 
 Advance only gates required by the selected scope; schematic-only work stops
 after schematic verification. For modification, continuation, or repair, bind
@@ -130,6 +135,9 @@ allow at most one active diagnostic candidate.
 `importChanges()` and `setNetlist()` are separate bulk operations requiring
 profile authorization, preflight evidence, and post-operation readback. Use
 visual inspection for confirmation, not primary construction.
+If EasyEDA's beta document comparator alone remains stale after saved/reopened
+readback, use only the strict multi-view false-negative contract in
+`live-build-gates.md`; manufacturing equality by itself is never sufficient.
 
 ## Protect user work
 
@@ -159,14 +167,26 @@ adds guidance but never replaces the baseline lifecycle.
 
 Load only what the task needs:
 
-- Entry-state selection, scope, shared intake, handoff, or cross-scope change:
+- Entry-state selection, scope, requirements baseline, primary-function
+  confirmation, handoff, or cross-scope change:
   [references/workflows/entry-routing.md](references/workflows/entry-routing.md)
 - Schematic creation, modification, or schematic-only review:
   [references/workflows/schematic-workflow.md](references/workflows/schematic-workflow.md)
+- Schematic functional layout, label/port usage, readability regression, or
+  handoff presentation closure:
+  [references/workflows/schematic-presentation.md](references/workflows/schematic-presentation.md)
+- Part selection, parameters, suitability, source access, exact-MPN/library
+  binding, missing-library handling, or substitution:
+  [references/workflows/component-selection-evidence.md](references/workflows/component-selection-evidence.md)
+- Component-class parameter coverage:
+  [references/workflows/component-parameter-profiles.md](references/workflows/component-parameter-profiles.md)
 - PCB creation from a schematic, unfinished-PCB continuation, repair, or review:
-  [references/workflows/pcb-workflow.md](references/workflows/pcb-workflow.md)
-- Place/route/copper: [references/layout/constraint-planning.md](references/layout/constraint-planning.md)
-  + [references/layout/layout-rules.md](references/layout/layout-rules.md)
+  [references/workflows/pcb-workflow.md](references/workflows/pcb-workflow.md). For creation,
+  also load the three schematic handoff references above.
+- Place/route/copper and assembly closure:
+  [references/layout/constraint-planning.md](references/layout/constraint-planning.md),
+  [references/layout/layout-rules.md](references/layout/layout-rules.md), and
+  [references/layout/placement-closure.md](references/layout/placement-closure.md)
 - Requirement-to-layer-count selection, layer roles, materials, or reference assignment:
   [references/layout/stackup-planning.md](references/layout/stackup-planning.md)
 - Switching regulator or power stage: [references/layout/power-layout.md](references/layout/power-layout.md)
@@ -178,6 +198,8 @@ Load only what the task needs:
   [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md), and exact
   `easyeda-api` docs
 - Finish/review: [references/workflows/review-checklist.md](references/workflows/review-checklist.md)
+- PCB DRC evidence:
+  [references/workflows/drc-evidence-closure.md](references/workflows/drc-evidence-closure.md)
 - Manufacturing export/regression: [references/api/manufacturing-output.md](references/api/manufacturing-output.md)
 - Crystal/resonator loop: [references/specialized/crystal-clock-audit.md](references/specialized/crystal-clock-audit.md)
 - Integrated-module or host-board PCB antenna, including mandatory
@@ -200,8 +222,7 @@ certification language without the required measurement/compliance evidence.
 
 ## Use audits for design closure
 
-Run audits after the relevant design phase exists, after changes that invalidate
-prior evidence, or when the user requests a review. Read
+Run audits after each relevant phase, invalidating change, or review request. Read
 [references/workflows/review-checklist.md](references/workflows/review-checklist.md) before a formal
 review.
 
@@ -211,6 +232,7 @@ scope:
 ```bash
 node scripts/easyeda_design_audit.mjs \
   --ground-net GND \
+  --placement-audit-report placement-closure.json \
   --high-speed-constraints high-speed-constraints.json \
   --output design-audit.json
 ```
@@ -221,16 +243,18 @@ geometry checks do not prove electrical, mechanical, or manufacturing intent.
 
 Use the specialized tools only when applicable:
 
-- `easyeda_constraint_lint.py` before ordinary PCB placement and after any
-  change that invalidates outline, stackup, floorplan, or conflict evidence;
+- `easyeda_stackup_decision_lint.py` after comparing stackups, then
+  `easyeda_constraint_lint.py` before placement and after invalidating changes;
+- `easyeda_placement_audit.mjs` after placement and before routing, then after
+  every component, footprint, pad, via, interface, process, or access change;
 - `easyeda_crystal_clock_audit.mjs` for passive crystal/resonator loops;
 - `pcb_calc.py` for geometry, edge-rate, resistance, and conductor screening;
 - `easyeda_high_speed_audit.mjs` for controlled/high-speed work;
 - `easyeda_manufacturing_audit.py` after API-exporting Gerber/drill, BOM, and PnP.
 
-Read the routed reference before invoking each tool. Reports and evidence must
-bind to the exact reviewed revision. Analytical calculator output remains an
-estimate, not fabricator/solver evidence.
+Load each tool's routed reference. Bind reports to the revision. For PCB
+DRC, follow `drc-evidence-closure.md`; geometry or rule changes stale prior
+evidence. Calculators are estimates, not fabricator/solver evidence.
 
 Evidence closes a gate only with a recognized status and an existing artifact,
 or with the human-attestation mechanism defined in the relevant reference.
@@ -273,11 +297,15 @@ After changing this skill:
 
 ```bash
 node scripts/easyeda_audit_tests.mjs
+node scripts/requirements_baseline_lint.mjs --self-test
+node scripts/component_selection_evidence.mjs --self-test
 node scripts/easyeda_identity_preflight.mjs --self-test
 node scripts/easyeda_revision_guard.mjs --self-test
 node scripts/easyeda_repair_snapshot.mjs --self-test
+node scripts/easyeda_placement_audit.mjs --self-test
 node scripts/easyeda_crystal_clock_audit.mjs --self-test
 python3 scripts/pcb_calc_tests.py
+python3 scripts/easyeda_stackup_decision_lint.py --self-test
 python3 scripts/easyeda_constraint_lint.py --self-test
 python3 scripts/easyeda_manufacturing_audit.py --self-test
 node scripts/check_companion.mjs || true

@@ -7,6 +7,7 @@
 - Prove the PCB entry gate
 - Continue an unfinished PCB
 - Place components
+- Close placement before routing
 - Route the board
 - Build copper
 - Verify the PCB
@@ -56,9 +57,10 @@ Before production PCB creation or continuation, require:
    `python3 scripts/easyeda_constraint_lint.py --record <layout-constraints.json>`;
 5. require the derived result `CLEARED_FOR_PLACEMENT`; `BLOCKED`, `UNRESOLVED`,
    or `STALE` stops production placement and routing;
-6. require manufacturing and native schematic/PCB synchronization `MATCH` before
-   routing: populate and save/reopen a new PCB, or bind and save/reopen the
-   existing PCB without repopulating it.
+6. require manufacturing and native schematic/PCB synchronization `MATCH`
+   before routing, or the strict `PCB_SYNC_VERIFIED_CACHE_EXCEPTION` defined in
+   `live-build-gates.md`: populate and save/reopen a new PCB, or bind and
+   save/reopen the existing PCB without repopulating it.
 
 If the handoff is missing or stale, stop and return the missing item to the
 schematic scope. Do not infer critical intent from net names or silently repair
@@ -101,10 +103,16 @@ then rebaseline and return to continuation.
 Do not begin placement until the consistency artifact is bound to the current
 constraint record and reports `CLEARED_FOR_PLACEMENT`.
 
-1. Fix feasible user-specified and mechanically constrained anchors: modules,
-   connectors, controls, antennas, indicators, holes, and cable exits.
-2. Place core ICs and modules for escape, thermal flow, antenna requirements,
-   and the shortest critical interfaces.
+Treat the following as dependency groups for an iterative floorplan, not an
+unconditional one-pass placement order. Revisit earlier movable decisions when
+escape, routing, return-path, thermal, access, or assembly canaries improve by
+doing so.
+
+1. Fix only anchors whose pose is proven by a user, mechanical, mating,
+   operator-access, or exact vendor constraint. Keep unconstrained connectors,
+   controls, indicators, headers, and cable exits movable.
+2. Place core ICs and modules jointly with the movable interfaces for escape,
+   thermal flow, antenna requirements, and the shortest critical paths.
 3. Put protection at connectors and power entry.
 4. Place regulator input/output, switch, gate/bootstrap, feedback, sense, and
    magnetic loops according to the sourced topology.
@@ -112,17 +120,40 @@ constraint record and reports `CLEARED_FOR_PLACEMENT`.
 6. Place each decoupling capacitor beside its supply pin with a short ground
    return.
 7. Preserve analog/reference and mixed-signal return-current partitioning.
-8. After function-critical placement is fixed, group identical orderable
-   passives, then same-footprint passives, locally where assembly benefits.
+8. Compare alternative coarse floorplans and representative escape, route, and
+   return-path canaries as required by `constraint-planning.md`; freeze only the
+   best supported feasible candidate.
 9. Never move decoupling, termination, matching, feedback, timing, sense, or
-   filter parts away from required pins or loops for visual uniformity.
+   filter parts away from required pins or loops for visual or package
+   uniformity. Apply the optional ordinary-passive assembly cleanup in
+   `layout-rules.md` only after functional placement is fixed.
 10. Rotate and group remaining parts to reduce crossings and create routing
     corridors without violating access, assembly, rework, enclosure, thermal,
     antenna, or applied-force constraints.
 
+## Close placement before routing
+
+`CLEARED_FOR_PLACEMENT` authorizes placement to start; it does not prove the
+implemented placement. Read [placement-closure.md](../layout/placement-closure.md),
+save/switch/reopen the PCB, and run the exact-revision placement audit. Require
+`PLACEMENT_CLEAR_FOR_ROUTING` before production routing.
+
+The gate checks ordinary via-to-pad copper and drill clearance even on the same
+net; containment of every live pad inside its owner's sourced courtyard;
+foreign pad/pad and pad/courtyard conflicts; sourced courtyard conflicts;
+critical module/escape zones; operator-control decisions; exact connector
+mating records; and passive/connector BOM policy. EasyEDA component BBoxes are
+screen-only; unresolved BBox candidates do not pass. Pad ownership must match
+both designator and parent primitive ID. Through-hole pads require sourced
+maximum-projection and opposite-side evidence; bottom-side component-local
+courtyards require the deterministic mirror transform. A component, footprint,
+pad, via, interface, process, or access change makes the placement report stale
+and reopens this gate.
+
 ## Route the board
 
-Before full routing in new construction, pass the routing canary in
+Before full routing in new construction, require current placement closure and
+pass the routing canary in
 [live-build-gates.md](live-build-gates.md). In PCB continuation, use the first
 new route in each unproven class as a canary while preserving existing geometry.
 During existing-board repair, treat each bounded replacement as its own canary
@@ -148,7 +179,11 @@ and require semantic readback before expansion.
    paths away from switching aggressors.
 9. Recompute net connectivity after each committed path and reject an already
    connected endpoint pair unless a documented redundant feed is intentional.
-10. Do not accept autorouter output without complete manual review.
+10. Qualify the autorouter with a bounded canary. A zero-duration all-net
+    failure is a capability failure: prove zero mutation, stop option-key
+    retries, and route manually. Do not accept successful output without full
+    saved/reopened geometry, topology, connectivity, and DRC review; final
+    normalized geometry, not create-returned track IDs, is authoritative.
 
 ## Build copper
 
@@ -162,8 +197,13 @@ rebuilt, use the operation-appropriate existing-board repair evidence gate.
 
 1. Define net, layer, clearance, thermal connection, priority, and island policy.
 2. Rebuild after routing and every geometry change.
-3. Read back the generated region and require at least one intended fill.
-4. Disable isolated islands unless each has a documented connection and purpose.
+3. Read back the generated region, enumerate every solid-fill ID, and require
+   complete ID coverage plus zero free-copper DRC results for those IDs.
+   Repeat this readback after save/switch/reopen because immediate fill counts
+   and derived fill partitioning may normalize.
+4. Apply the remove, deliberately-connect, or separately-reviewed-feature
+   disposition in `layout-rules.md` to every disconnected region. The source
+   island setting alone does not close this gate.
 5. Inspect narrow necks, slots, reference voids, thermal spokes, and return-path
    discontinuities.
 6. Add justified ground stitching near connectors, edges, layer transitions,
@@ -179,13 +219,15 @@ order:
 1. exact schematic identity and handoff currency;
 2. symbol/footprint/pin-map, part population, passive policy, and manufacturing
    plus native synchronization;
-3. current aggregate constraint-consistency artifact, jointly frozen stackup,
-   floorplan, placement, mechanics, access, polarity, thermal, antenna, conflict
-   ledger, and assembly review;
+3. current aggregate constraint-consistency artifact plus exact-revision
+   `PLACEMENT_CLEAR_FOR_ROUTING`; jointly frozen stackup, floorplan, placement,
+   mechanics, access, polarity, thermal, antenna, conflict ledger, and assembly
+   review;
 4. routing-canary DRC, unrouted/connectivity, layer usage, geometry, angle,
    critical-net, return-path, and unintended-cycle checks;
 5. copper canary, full rebuild, filled-region readback, islands, necks, and PCB
-   DRC;
+   DRC; at the final PCB gate, use the repeated rule-bound closure protocol in
+   `drc-evidence-closure.md` after save/switch/reopen and copper readback;
 6. applicable high-speed, crystal, power, mixed-signal, antenna, PDN, EMC, and
    BGA/HDI evidence bound to the exact PCB revision;
 7. fabricator capability and, only when requested, Gerber/drill/BOM/PnP export

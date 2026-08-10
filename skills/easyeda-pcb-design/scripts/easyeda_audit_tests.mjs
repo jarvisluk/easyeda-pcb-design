@@ -7,12 +7,15 @@ import path from "node:path";
 
 import {
   COMPLETION_TEMPLATE,
+  DESIGN_FINGERPRINT_SCHEMA_VERSION,
   EXIT as COMMON_EXIT,
+  analyzePourConnectivity,
   constraintFingerprint,
   crystalNetHints,
   designFingerprint,
   evidenceMeetsGate,
   findEasyedaApiSkill,
+  freeCopperPrimitiveIds,
   highRiskInterfaceReasons,
   highSpeedDiscovery,
   highSpeedNetHints,
@@ -25,11 +28,22 @@ import {
   DECISIONS as BASELINE_DECISIONS,
   EXIT as BASELINE_EXIT,
   analyze as analyzeBaseline,
+  analyzeSchematicPresentation,
+  bindPcbDrcEvidence,
   collectorCode as baselineCollectorCode,
   parseArgs as parseBaselineArgs,
   pcbFixture,
   resolveWindow as resolveBaselineWindow,
+  schematicFixture,
+  validateNetlistCompareExceptionArtifact,
 } from "./easyeda_design_audit.mjs";
+import {
+  REQUIRED_INVALIDATION_TRIGGERS,
+  REQUIRED_PARAMETER_COVERAGE_ASPECTS,
+  sha256Buffer,
+  validateArtifact as validateSelectionArtifact,
+  validateComponentEvidenceRecord,
+} from "./component_selection_evidence.mjs";
 import {
   DECISIONS as CRYSTAL_DECISIONS,
   analyze as analyzeCrystal,
@@ -51,11 +65,13 @@ import {
   selfTestFixture,
 } from "./easyeda_high_speed_audit.mjs";
 import {
+  comparePcbDataPlane,
   compareNetlists,
   identityContractIssues,
   overallDecision,
   parseArgs as parseNetlistCompareArgs,
   summarizeNativeComparison,
+  verifyNativeCacheException,
 } from "./easyeda_netlist_compare.mjs";
 import {
   analyzeIdentity,
@@ -70,6 +86,13 @@ import {
   resolveSafeInputPath,
   treeCollectorCode as revisionTreeCollectorCode,
 } from "./easyeda_revision_guard.mjs";
+import {
+  STATUS as PLACEMENT_STATUS,
+  analyzePlacement,
+  constraintFixture as placementConstraintFixture,
+  evidenceFixture as placementEvidenceFixture,
+  fixture as placementFixture,
+} from "./easyeda_placement_audit.mjs";
 
 function withHumanAttestation(options, revision = "test-rev-1") {
   return {
@@ -99,6 +122,154 @@ function attested(record, argv = []) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function parameterCoverageFixture(overrides = {}) {
+  return REQUIRED_PARAMETER_COVERAGE_ASPECTS.map((aspect) => ({
+    aspect,
+    status: "NOT_APPLICABLE",
+    parameterIds: [],
+    checkIds: [],
+    rationale: "not exercised by this synthetic regression fixture",
+    ...(overrides[aspect] || {}),
+  }));
+}
+
+function componentEvidenceRecord(raw, artifactPath, content) {
+  return {
+    schemaVersion: 2,
+    schematic: {
+      projectUuid: raw.project.uuid,
+      documentUuid: raw.document.uuid,
+      fingerprintSchemaVersion: DESIGN_FINGERPRINT_SCHEMA_VERSION,
+      designFingerprint: designFingerprint(raw),
+    },
+    invalidationPolicy: [...REQUIRED_INVALIDATION_TRIGGERS],
+    sources: {
+      primary: {
+        publisher: "Example Semiconductor",
+        documentId: "DS-100",
+        revision: "Rev 1.2",
+        canonicalUrl: "https://manufacturer.example/DS-100.pdf",
+        retrievedAt: "2026-08-09T00:00:00Z",
+        accessStatus: "AVAILABLE_VERIFIED",
+        authority: "MANUFACTURER_PRIMARY",
+        artifactPath,
+        sha256: sha256Buffer(content),
+        mediaType: "application/pdf",
+        contentVerification: {
+          status: "VERIFIED",
+          method: "VISUAL_REVIEW",
+          exactPartMatch: true,
+          revisionMatch: true,
+          observedDocumentId: "DS-100",
+          observedRevision: "Rev 1.2",
+          coveredPartNumbers: ["EXAMPLE-MCU-1"],
+          location: "cover and section 4",
+          reviewedAt: "2026-08-09T00:05:00Z",
+          reviewer: "regression-test",
+        },
+      },
+    },
+    designRequirements: [
+      {
+        id: "rail_min_v",
+        name: "minimum rail voltage",
+        value: 3.0,
+        unit: "V",
+        conditions: "normal operation",
+        basis: {
+          kind: "REQUIREMENTS_BASELINE",
+          reference: "test baseline power budget",
+          fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        id: "rail_max_v",
+        name: "maximum rail voltage",
+        value: 3.6,
+        unit: "V",
+        conditions: "normal operation",
+        basis: {
+          kind: "REQUIREMENTS_BASELINE",
+          reference: "test baseline power budget",
+          fingerprint: `sha256:${"a".repeat(64)}`,
+        },
+      },
+    ],
+    parts: [
+      {
+        reference: "U1",
+        manufacturer: "Example Semiconductor",
+        manufacturerPartNumber: "EXAMPLE-MCU-1",
+        package: "LQFP48",
+        footprint: "LQFP48",
+        criticality: "CRITICAL",
+        disposition: "POPULATE",
+        functionClass: "MICROCONTROLLER",
+        sourceIds: ["primary"],
+        requirements: [
+          {
+            name: "supply voltage",
+            value: "3.3 V",
+            sourceId: "primary",
+            location: "section 4.1",
+            derivation: "direct datasheet requirement",
+          },
+        ],
+        parameters: [
+          {
+            id: "supply_min_v",
+            name: "minimum supply voltage",
+            value: 2.7,
+            unit: "V",
+            conditions: "recommended operating conditions",
+            sourceId: "primary",
+            location: "section 4.1",
+          },
+          {
+            id: "supply_max_v",
+            name: "maximum supply voltage",
+            value: 3.6,
+            unit: "V",
+            conditions: "recommended operating conditions",
+            sourceId: "primary",
+            location: "section 4.1",
+          },
+        ],
+        libraryBinding: {
+          resolution: "EXACT_LIBRARY_DEVICE",
+          substitutionPolicy: "FORBID",
+          requestedManufacturerPartNumber: "EXAMPLE-MCU-1",
+          selectedManufacturerPartNumber: "EXAMPLE-MCU-1",
+          deviceUuid: "device-u1",
+          symbolUuid: "symbol-u1",
+          footprintUuid: "fp",
+          footprintLibraryUuid: "lib",
+        },
+        parameterCoverage: parameterCoverageFixture({
+          ELECTRICAL_LIMITS: {
+            status: "AUDITED",
+            parameterIds: ["supply_min_v", "supply_max_v"],
+            checkIds: ["u1_supply_range"],
+            rationale: "the project rail range must be contained",
+          },
+        }),
+        suitability: { checkIds: ["u1_supply_range"], unresolved: [] },
+      },
+    ],
+    suitabilityChecks: [
+      {
+        id: "u1_supply_range",
+        type: "PARAMETER_RANGE_CONTAINS",
+        partReference: "U1",
+        parameterMinimumId: "supply_min_v",
+        parameterMaximumId: "supply_max_v",
+        requirementMinimumId: "rail_min_v",
+        requirementMaximumId: "rail_max_v",
+      },
+    ],
+  };
 }
 
 function writeAttestFile(dir, revision = "rev-A") {
@@ -135,6 +306,7 @@ function runTests() {
     crystalCollectorCode(),
     /\bEDMT_EditorDocumentType\b/,
   );
+  assert.match(baselineCollectorCode(), /getState_SpecialPad/);
 
   assert.equal(BASELINE_EXIT.PASS_WITH_EXCEPTIONS, 4);
   assert.equal(EXIT.PASS_WITH_EXCEPTIONS, 4);
@@ -219,6 +391,17 @@ function runTests() {
     ]).schematicUuid,
     "schematic-1",
   );
+  assert.throws(
+    () =>
+      parseNetlistCompareArgs([
+        "--schematic-page-uuid",
+        "page-1",
+        "--pcb-uuid",
+        "pcb-1",
+        "--allow-native-cache-exception",
+      ]),
+    /requires --schematic-uuid/,
+  );
   assert.deepEqual(summarizeNativeComparison(undefined, false), {
     status: "NOT_REQUESTED",
     differenceCount: null,
@@ -241,6 +424,75 @@ function runTests() {
   assert.equal(overallDecision(true, "UNAVAILABLE"), "UNVERIFIED");
   assert.equal(overallDecision(true, "NOT_REQUESTED", true), "UNVERIFIED");
   assert.equal(overallDecision(true, "MATCH", true), "MATCH");
+  assert.equal(
+    overallDecision(true, "MISMATCH", true, "VERIFIED"),
+    "MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION",
+  );
+  const directPcb = comparePcbDataPlane(
+    matchingNetlist,
+    JSON.stringify(sameNetlist),
+    ["GND", "+3V3"],
+    [
+      {
+        primitiveId: "pcb-u1",
+        designator: "U1",
+        pads: [
+          { primitiveId: "pad-1", number: "1", net: "GND" },
+          { primitiveId: "pad-2", number: "2", net: "+3V3" },
+        ],
+      },
+    ],
+  );
+  assert.equal(directPcb.match, true);
+  const cacheDifferences = [
+    { type: "NET", object: "'+3V3'", net1: ["U1.2"], net2: [] },
+    { type: "NET", object: "GND", net1: ["U1.1"], net2: [] },
+  ];
+  assert.equal(
+    verifyNativeCacheException({
+      requested: true,
+      manufacturingMatch: true,
+      nativeDifferences: cacheDifferences,
+      fileComparison: [],
+      pcbDataPlane: directPcb,
+      expectedNetNames: ["+3V3", "GND"],
+    }).status,
+    "VERIFIED",
+  );
+  assert.equal(
+    verifyNativeCacheException({
+      requested: true,
+      manufacturingMatch: true,
+      nativeDifferences: [
+        { type: "COMPONENT", object: "U1", net1: ["U1"], net2: [] },
+      ],
+      fileComparison: [],
+      pcbDataPlane: directPcb,
+      expectedNetNames: ["+3V3", "GND"],
+    }).status,
+    "REJECTED",
+  );
+  const badDirectPcb = comparePcbDataPlane(
+    matchingNetlist,
+    JSON.stringify(sameNetlist),
+    ["GND", "+3V3"],
+    [
+      {
+        primitiveId: "pcb-u1",
+        designator: "U1",
+        pads: [
+          { primitiveId: "pad-1", number: "1", net: "GND" },
+          { primitiveId: "pad-2", number: "2", net: "GND" },
+        ],
+      },
+    ],
+  );
+  assert.equal(badDirectPcb.match, false);
+  assert.ok(
+    badDirectPcb.issues.some(
+      (issue) => issue.code === "PCB_DIRECT_PAD_NET_MISMATCH",
+    ),
+  );
   assert.equal(EXIT.UNVERIFIED, 3);
 
   assert.throws(() => parseIdentityPreflightArgs([]), /schematic-page-uuid/);
@@ -368,6 +620,254 @@ function runTests() {
   assert.equal(revisionUnverified.decision, "UNVERIFIED");
   assert.deepEqual(revisionUnverified.unregisteredLiveUuids, ["pcb-extra"]);
 
+  assert.equal(DESIGN_FINGERPRINT_SCHEMA_VERSION, 5);
+  const rotationFingerprintFixture = pcbFixture();
+  rotationFingerprintFixture.components[0].rotation = 0;
+  const rotationFingerprintA = designFingerprint(rotationFingerprintFixture);
+  rotationFingerprintFixture.components[0].rotation = 90;
+  assert.notEqual(
+    designFingerprint(rotationFingerprintFixture),
+    rotationFingerprintA,
+    "component rotation must invalidate exact-revision evidence",
+  );
+  const specialPadFingerprintFixture = placementFixture();
+  const specialPadFingerprint = designFingerprint(specialPadFingerprintFixture);
+  specialPadFingerprintFixture.pads[0].specialPad = [[1, 2, ["RECTANGLE", 60, 80, 0]]];
+  assert.notEqual(
+    designFingerprint(specialPadFingerprintFixture),
+    specialPadFingerprint,
+    "per-layer specialPad geometry must invalidate exact-revision evidence",
+  );
+
+  const placementRaw = placementFixture();
+  const placementRecord = placementConstraintFixture(placementRaw);
+  const placementClear = analyzePlacement(
+    placementRaw,
+    placementEvidenceFixture(placementRecord),
+    { kind: "test-placement-clear" },
+  );
+  assert.equal(placementClear.status, PLACEMENT_STATUS.CLEAR);
+  const placementViaIntrusionRaw = clone(placementRaw);
+  placementViaIntrusionRaw.vias[0].x = 42;
+  const placementViaIntrusion = analyzePlacement(
+    placementViaIntrusionRaw,
+    placementEvidenceFixture(placementConstraintFixture(placementViaIntrusionRaw)),
+    { kind: "test-placement-via" },
+  );
+  assert.equal(placementViaIntrusion.status, PLACEMENT_STATUS.BLOCKED);
+  assert.equal(placementViaIntrusion.checks.viaPad.violations[0].sameNet, true);
+  assert.equal(placementViaIntrusion.checks.viaPad.violations[0].copperOverlap, true);
+  assert.equal(
+    placementViaIntrusion.checks.viaPad.violations[0].drillOverlap,
+    true,
+    "same-net drill intrusion into an ordinary switch pad must block placement",
+  );
+
+  const placementEnvelopeConflictRaw = clone(placementRaw);
+  placementEnvelopeConflictRaw.components[1].x = 25;
+  placementEnvelopeConflictRaw.components[1].bbox = {
+    minX: -5,
+    minY: -30,
+    maxX: 55,
+    maxY: 30,
+  };
+  const placementEnvelopeConflict = analyzePlacement(
+    placementEnvelopeConflictRaw,
+    placementEvidenceFixture(placementConstraintFixture(placementEnvelopeConflictRaw)),
+    { kind: "test-placement-envelope-conflict" },
+  );
+  assert.equal(placementEnvelopeConflict.status, PLACEMENT_STATUS.BLOCKED);
+  assert.equal(
+    placementEnvelopeConflict.checks.componentPlacement.exactConflicts.length,
+    1,
+    "sourced assembly-envelope overlap must block placement",
+  );
+
+  const formalRaw = pcbFixture();
+  const formalMissingPlacement = analyzeBaseline(
+    formalRaw,
+    parseBaselineArgs([]),
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalMissingPlacement.decision, BASELINE_DECISIONS.UNVERIFIED);
+  assert.match(
+    formalMissingPlacement.checks.unverified.join("\n"),
+    /placement\/assembly closure/,
+  );
+  const clearPlacementArtifact = {
+    schemaVersion: 2,
+    kind: "easyeda-placement-audit",
+    status: "PLACEMENT_CLEAR_FOR_ROUTING",
+    fabricationRelease: false,
+    design: {
+      project: formalRaw.project,
+      document: formalRaw.document,
+      fingerprint: designFingerprint(formalRaw),
+    },
+    constraints: {
+      revision: designFingerprint(formalRaw),
+      recordFingerprint: `sha256:${"a".repeat(64)}`,
+      consistencyGateStatus: "CLEARED_FOR_PLACEMENT",
+    },
+    checks: {
+      viaPad: {
+        violations: [],
+        unsupportedPads: [],
+        unsupportedVias: [],
+      },
+      componentPlacement: {
+        exactConflicts: [],
+        ownPadOutsideCourtyard: [],
+        crossComponentPadConflicts: [],
+        crossComponentPadClearanceViolations: [],
+        padToForeignCourtyardConflicts: [],
+        criticalZoneViolations: [],
+        unsupportedPadOccupancy: [],
+        unownedPads: [],
+        componentIdentityConflicts: [],
+        invalidEnvelopes: [],
+        missingEnvelopeDesignators: [],
+        missingOppositeSideCourtyardDesignators: [],
+        missingPadstackProjectionEvidence: [],
+        unresolvedBboxCandidates: [],
+        criticalZoneUnverified: [],
+      },
+      humanInterfaces: { violations: [], unverified: [] },
+      interfacesAndBom: { failures: [], unverified: [] },
+    },
+    failures: [],
+    unverified: [],
+    stale: [],
+  };
+  const formalPlacementClear = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalPlacementClear.decision, BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS);
+  const formalLegacyPlacement = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: { ...clearPlacementArtifact, schemaVersion: 1 },
+      placementAuditReport: "<placement-self-test-legacy>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalLegacyPlacement.decision, BASELINE_DECISIONS.UNVERIFIED);
+  const formalConflictingClearPlacement = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: {
+        ...clearPlacementArtifact,
+        checks: {
+          ...clearPlacementArtifact.checks,
+          componentPlacement: {
+            ...clearPlacementArtifact.checks.componentPlacement,
+            ownPadOutsideCourtyard: [{ designator: "SW1", padNumber: "1" }],
+          },
+        },
+      },
+      placementAuditReport: "<placement-self-test-conflicting-clear>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalConflictingClearPlacement.decision, BASELINE_DECISIONS.FAIL);
+  const formalExactConflictClearPlacement = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: {
+        ...clearPlacementArtifact,
+        checks: {
+          ...clearPlacementArtifact.checks,
+          componentPlacement: {
+            ...clearPlacementArtifact.checks.componentPlacement,
+            exactConflicts: [{ firstDesignator: "SW1", secondDesignator: "U1" }],
+          },
+        },
+      },
+      placementAuditReport: "<placement-self-test-exact-conflict>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalExactConflictClearPlacement.decision, BASELINE_DECISIONS.FAIL);
+  for (const [name, mutate, expectedDecision] of [
+    [
+      "via-violation",
+      (artifact) => artifact.checks.viaPad.violations.push({ viaPrimitiveId: "via-1" }),
+      BASELINE_DECISIONS.FAIL,
+    ],
+    [
+      "missing-envelope",
+      (artifact) => artifact.checks.componentPlacement.missingEnvelopeDesignators.push("U1"),
+      BASELINE_DECISIONS.UNVERIFIED,
+    ],
+    [
+      "unsupported-via",
+      (artifact) => artifact.checks.viaPad.unsupportedVias.push({ primitiveId: "via-1" }),
+      BASELINE_DECISIONS.UNVERIFIED,
+    ],
+    [
+      "human-interface-violation",
+      (artifact) => artifact.checks.humanInterfaces.violations.push({ groupId: "controls" }),
+      BASELINE_DECISIONS.FAIL,
+    ],
+    [
+      "interface-bom-failure",
+      (artifact) => artifact.checks.interfacesAndBom.failures.push({ designator: "J1" }),
+      BASELINE_DECISIONS.FAIL,
+    ],
+  ]) {
+    const artifact = clone(clearPlacementArtifact);
+    mutate(artifact);
+    const result = analyzeBaseline(
+      formalRaw,
+      {
+        ...parseBaselineArgs([]),
+        placementAuditRecord: artifact,
+        placementAuditReport: `<placement-self-test-${name}>`,
+      },
+      { kind: "formal-review-fixture" },
+    );
+    assert.equal(result.decision, expectedDecision, name);
+  }
+  const formalStaleConstraintPlacement = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: {
+        ...clearPlacementArtifact,
+        constraints: {
+          ...clearPlacementArtifact.constraints,
+          revision: `sha256:${"b".repeat(64)}`,
+        },
+      },
+      placementAuditReport: "<placement-self-test-stale-constraint>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalStaleConstraintPlacement.decision, BASELINE_DECISIONS.UNVERIFIED);
+  const formalPlacementBlocked = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: {
+        ...clearPlacementArtifact,
+        status: "BLOCKED",
+        failures: ["component overlap"],
+      },
+      placementAuditReport: "<placement-self-test-blocked>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalPlacementBlocked.decision, BASELINE_DECISIONS.FAIL);
+
   const baseline = analyzeBaseline(
     pcbFixture(),
     parseBaselineArgs([]),
@@ -376,8 +876,114 @@ function runTests() {
   assert.equal(baseline.decision, BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS);
   assert.equal(baseline.fabricationRelease, false);
   assert.equal(baseline.manufacturingOutputsReviewed, false);
+  assert.equal(baseline.checks.drc.evidenceVerified, true);
+  assert.equal(baseline.checks.drc.ruleBinding.stable, true);
+  assert.equal(
+    baseline.constraints.drcRuleBinding.fingerprint,
+    baseline.checks.drc.ruleBinding.fingerprint,
+  );
+  assert.match(baseline.design.evidenceBindingFingerprint, /^sha256:/);
+  assert.deepEqual(
+    baseline.checks.drc.repeatability.observedSampleIds,
+    ["silent-1", "silent-2", "visible-final"],
+  );
   assert.ok(!Object.hasOwn(BASELINE_DECISIONS, "PASS"));
   assert.ok(!Object.hasOwn(DECISIONS, "PASS"));
+
+  const missingDrcEvidenceFixture = pcbFixture();
+  delete missingDrcEvidenceFixture.drcEvidence;
+  const missingDrcEvidence = analyzeBaseline(
+    missingDrcEvidenceFixture,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(
+    missingDrcEvidence.decision,
+    BASELINE_DECISIONS.UNVERIFIED,
+  );
+  assert.equal(missingDrcEvidence.checks.drc.passed, true);
+  assert.equal(missingDrcEvidence.checks.drc.evidenceVerified, false);
+  assert.match(
+    missingDrcEvidence.checks.unverified.join("\n"),
+    /DRC evidence is not closure-grade/,
+  );
+
+  const changedRuleFixture = pcbFixture();
+  bindPcbDrcEvidence(changedRuleFixture, {
+    ruleAfter: {
+      name: "Self Test Two Layer Rules",
+      configuration: { clearance: { trackToTrack: 0.1524 } },
+    },
+  });
+  const changedRule = analyzeBaseline(
+    changedRuleFixture,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(changedRule.decision, BASELINE_DECISIONS.UNVERIFIED);
+  assert.equal(changedRule.checks.drc.ruleBinding.stable, false);
+  assert.match(changedRule.checks.drc.ruleBinding.reason, /changed/);
+
+  const clearanceLeaf = {
+    errorType: "Clearance Error",
+    errorObjType: "Track-to-Via",
+    ruleName: "Clearance",
+    globalIndex: "volatile-1",
+    objs: ["via-gnd", "track-en"],
+    explanation: {
+      errData: {
+        actual: 0.137,
+        required: 0.1524,
+        obj1: "track-en",
+        obj2: "via-gnd",
+      },
+    },
+  };
+  const clearanceResult = [
+    { name: "Clearance Error", list: [clearanceLeaf] },
+  ];
+  const repeatedClearanceFixture = pcbFixture();
+  bindPcbDrcEvidence(repeatedClearanceFixture, {
+    results: [
+      clearanceResult,
+      [
+        {
+          name: "Clearance Error",
+          list: [{ ...clearanceLeaf, globalIndex: "volatile-2", objs: ["track-en", "via-gnd"] }],
+        },
+      ],
+      clearanceResult,
+    ],
+  });
+  const repeatedClearance = analyzeBaseline(
+    repeatedClearanceFixture,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(repeatedClearance.decision, BASELINE_DECISIONS.FAIL);
+  assert.equal(repeatedClearance.checks.drc.evidenceVerified, true);
+  assert.equal(repeatedClearance.checks.drc.errorCount, 1);
+  assert.deepEqual(
+    repeatedClearance.checks.drc.observedNonPassingSampleIds,
+    ["silent-1", "silent-2", "visible-final"],
+  );
+
+  const inconsistentDrcFixture = pcbFixture();
+  bindPcbDrcEvidence(inconsistentDrcFixture, {
+    results: [clearanceResult, [], []],
+  });
+  const inconsistentDrc = analyzeBaseline(
+    inconsistentDrcFixture,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(inconsistentDrc.decision, BASELINE_DECISIONS.FAIL);
+  assert.equal(inconsistentDrc.checks.drc.evidenceVerified, false);
+  assert.equal(inconsistentDrc.checks.drc.repeatability.stableLeafSet, false);
+  assert.deepEqual(
+    inconsistentDrc.checks.drc.observedNonPassingSampleIds,
+    ["silent-1"],
+  );
 
   const schematicWarningsOnly = analyzeBaseline(
     {
@@ -401,10 +1007,52 @@ function runTests() {
   );
   assert.equal(
     schematicWarningsOnly.decision,
-    BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS,
+    BASELINE_DECISIONS.UNVERIFIED,
   );
   assert.equal(schematicWarningsOnly.checks.drc.warningCount, 3);
   assert.equal(schematicWarningsOnly.checks.drc.errorCount, 0);
+
+  const degradedPresentationRaw = schematicFixture();
+  degradedPresentationRaw.components = Array.from({ length: 22 }, (_, index) => ({
+    primitiveId: `part-${index + 1}`,
+    designator: `U${index + 1}`,
+    name: "Part",
+    addIntoPcb: true,
+    footprint: { libraryUuid: "lib", uuid: `fp-${index + 1}` },
+  }));
+  degradedPresentationRaw.schematicAnnotations = Array.from(
+    { length: 37 },
+    (_, index) => ({
+      primitiveId: `netport-${index + 1}`,
+      componentType: "netport",
+      net: `NET_${index + 1}`,
+    }),
+  );
+  degradedPresentationRaw.schematicWires = Array.from(
+    { length: 113 },
+    (_, index) => ({
+      primitiveId: `stub-${index + 1}`,
+      net: `NET_${(index % 37) + 1}`,
+      line: [index * 20, 0, index * 20 + 10, 0],
+    }),
+  );
+  degradedPresentationRaw.wireCount =
+    degradedPresentationRaw.schematicWires.length;
+  const degradedPresentation = analyzeBaseline(
+    degradedPresentationRaw,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(degradedPresentation.decision, BASELINE_DECISIONS.FAIL);
+  assert.equal(
+    degradedPresentation.checks.presentation.status,
+    "DEGRADED_LABEL_STUB_PATTERN",
+  );
+  assert.equal(degradedPresentation.checks.presentation.metrics.shortStubCount, 113);
+  assert.equal(
+    analyzeSchematicPresentation(degradedPresentationRaw).blocking,
+    true,
+  );
 
   const baselinePreserveSilosFixture = pcbFixture();
   baselinePreserveSilosFixture.pours[0].preserveSilos = true;
@@ -418,6 +1066,73 @@ function runTests() {
   assert.equal(
     baselinePreserveSilosPass.checks.pours[0].preserveSilosStateIgnored,
     true,
+  );
+
+  const partialFillEvidence = analyzePourConnectivity({
+    hasCopper: true,
+    fillCount: 2,
+    solidFillCount: 2,
+    solidFillIds: ["fill-connected"],
+    preserveSilos: false,
+  });
+  assert.equal(partialFillEvidence.passed, false);
+  assert.equal(
+    partialFillEvidence.islandStatus,
+    "UNVERIFIED_SOLID_FILL_ID_COVERAGE",
+  );
+
+  const freeCopperLeaves = [
+    {
+      errorType: "No Connection",
+      isFree: true,
+      objs: ["fill-free"],
+      explanation: { errData: { obj1: "fill-free", obj2: "fill-peer" } },
+    },
+  ];
+  const freeCopperIds = freeCopperPrimitiveIds(freeCopperLeaves);
+  assert.deepEqual(
+    [...freeCopperIds].sort(),
+    ["fill-free"],
+  );
+  const freeCopperPour = analyzePourConnectivity(
+    {
+      hasCopper: true,
+      fillCount: 2,
+      solidFillCount: 2,
+      solidFillIds: ["fill-connected", "fill-free"],
+      preserveSilos: false,
+    },
+    freeCopperIds,
+  );
+  assert.equal(freeCopperPour.passed, false);
+  assert.equal(freeCopperPour.islandStatus, "FREE_COPPER_DETECTED");
+  assert.deepEqual(freeCopperPour.freeSolidFillIds, ["fill-free"]);
+
+  const baselineFreeCopperFixture = pcbFixture();
+  baselineFreeCopperFixture.pours[0].solidFillIds = ["fill-free"];
+  baselineFreeCopperFixture.drc = [
+    {
+      name: "Connection Error",
+      list: [
+        {
+          errorType: "No Connection",
+          isFree: true,
+          objs: ["fill-free"],
+        },
+      ],
+    },
+  ];
+  bindPcbDrcEvidence(baselineFreeCopperFixture);
+  const baselineFreeCopperFail = analyzeBaseline(
+    baselineFreeCopperFixture,
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(baselineFreeCopperFail.decision, BASELINE_DECISIONS.FAIL);
+  assert.equal(baselineFreeCopperFail.checks.pours[0].passed, false);
+  assert.equal(
+    baselineFreeCopperFail.checks.pours[0].islandStatus,
+    "FREE_COPPER_DETECTED",
   );
 
   const baselineNativeCacheFixture = pcbFixture();
@@ -434,6 +1149,7 @@ function runTests() {
       ],
     },
   ];
+  bindPcbDrcEvidence(baselineNativeCacheFixture);
   const baselineNativeCachePass = analyzeBaseline(
     baselineNativeCacheFixture,
     {
@@ -455,12 +1171,78 @@ function runTests() {
     baselineNativeCachePass.decision,
     BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS,
   );
+  assert.ok(baselineNativeCachePass.checks.drc.rawErrors.length > 0);
+
+  const strictCacheArtifact = {
+    kind: "easyeda-manufacturing-netlist-comparison",
+    decision: "MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION",
+    manufacturingDecision: "MATCH",
+    fabricationRelease: false,
+    project: { uuid: "self-test" },
+    schematic: { uuid: "sch" },
+    pcb: { uuid: "pcb" },
+    comparison: { match: true },
+    pcbDataPlaneIntegrity: { match: true },
+    nativeFileComparison: [],
+    nativeCacheException: {
+      status: "VERIFIED",
+      issues: [],
+      interpretation: "self-test verified native cache false negative",
+    },
+  };
+  const strictCacheException = validateNetlistCompareExceptionArtifact(
+    strictCacheArtifact,
+    "<strict-self-test>",
+  );
+  const strictCachePass = analyzeBaseline(
+    baselineNativeCacheFixture,
+    {
+      ...parseBaselineArgs([]),
+      nativeNetlistCacheException: strictCacheException,
+    },
+    { kind: "test" },
+  );
+  assert.equal(strictCachePass.checks.drc.passedWithExceptions, true);
+  assert.equal(strictCachePass.checks.drc.rawErrorCount, 1);
+
+  assert.throws(
+    () =>
+      validateNetlistCompareExceptionArtifact(
+        {
+          ...strictCacheArtifact,
+          pcbDataPlaneIntegrity: { match: false },
+        },
+        "<weak-self-test>",
+      ),
+    /complete verified native-cache-exception contract/,
+  );
+  const wrongProjectException = validateNetlistCompareExceptionArtifact(
+    {
+      ...strictCacheArtifact,
+      project: { uuid: "different-project" },
+    },
+    "<wrong-project-self-test>",
+  );
+  const strictCacheWrongProject = analyzeBaseline(
+    baselineNativeCacheFixture,
+    {
+      ...parseBaselineArgs([]),
+      nativeNetlistCacheException: wrongProjectException,
+    },
+    { kind: "test" },
+  );
+  assert.equal(strictCacheWrongProject.decision, BASELINE_DECISIONS.FAIL);
+  assert.match(
+    strictCacheWrongProject.checks.drc.exceptionRejected,
+    /does not match active project/,
+  );
   const baselineNativeCachePlusRealError = clone(baselineNativeCacheFixture);
   baselineNativeCachePlusRealError.drc.push({
     errorType: "Clearance Error",
     errorObjType: "Track",
     ruleName: "Clearance",
   });
+  bindPcbDrcEvidence(baselineNativeCachePlusRealError);
   const baselineNativeCacheRejected = analyzeBaseline(
     baselineNativeCachePlusRealError,
     {
@@ -822,6 +1604,261 @@ function runTests() {
 
   const tempDir = mkdtempSync(path.join(tmpdir(), "easyeda-audit-"));
   try {
+    const selectionRaw = schematicFixture();
+    selectionRaw.components[0] = {
+      ...selectionRaw.components[0],
+      manufacturer: "Example Semiconductor",
+      manufacturerPartNumber: "EXAMPLE-MCU-1",
+      footprint: { libraryUuid: "lib", uuid: "fp", name: "LQFP48" },
+    };
+    const selectionPdf = Buffer.from(
+      "%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n",
+    );
+    const selectionPdfPath = path.join(tempDir, "selection.pdf");
+    writeFileSync(selectionPdfPath, selectionPdf);
+    const selectionRecord = componentEvidenceRecord(
+      selectionRaw,
+      selectionPdfPath,
+      selectionPdf,
+    );
+    const selectionResult = validateComponentEvidenceRecord(
+      selectionRecord,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(selectionResult.cleared, true);
+
+    const incompleteParameterCoverage = clone(selectionRecord);
+    incompleteParameterCoverage.parts[0].parameterCoverage =
+      incompleteParameterCoverage.parts[0].parameterCoverage.filter(
+        (coverage) => coverage.aspect !== "TIMING_FREQUENCY",
+      );
+    const incompleteParameterCoverageResult = validateComponentEvidenceRecord(
+      incompleteParameterCoverage,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(
+      incompleteParameterCoverageResult.decision,
+      BASELINE_DECISIONS.UNVERIFIED,
+    );
+    assert.match(
+      incompleteParameterCoverageResult.unverified.join("\n"),
+      /parameterCoverage is missing TIMING_FREQUENCY/,
+    );
+
+    const inadequateSelection = clone(selectionRecord);
+    inadequateSelection.designRequirements.find(
+      (requirement) => requirement.id === "rail_max_v",
+    ).value = 4.2;
+    const inadequateResult = validateComponentEvidenceRecord(
+      inadequateSelection,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(inadequateResult.decision, BASELINE_DECISIONS.FAIL);
+    assert.match(inadequateResult.violations.join("\n"), /does not contain required range/);
+
+    const legacySelection = clone(selectionRecord);
+    legacySelection.schemaVersion = 1;
+    const legacyResult = validateComponentEvidenceRecord(
+      legacySelection,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(legacyResult.decision, BASELINE_DECISIONS.UNVERIFIED);
+    assert.match(legacyResult.unverified.join("\n"), /traceability only/);
+
+    const blockedLibrary = clone(selectionRecord);
+    blockedLibrary.parts[0].libraryBinding = {
+      resolution: "BLOCKED",
+      substitutionPolicy: "FORBID",
+      requestedManufacturerPartNumber: "EXAMPLE-MCU-1",
+      selectedManufacturerPartNumber: "EXAMPLE-MCU-1",
+      reason: "exact device is absent and custom qualification is incomplete",
+    };
+    const blockedLibraryResult = validateComponentEvidenceRecord(
+      blockedLibrary,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(blockedLibraryResult.decision, BASELINE_DECISIONS.UNVERIFIED);
+    assert.match(blockedLibraryResult.unverified.join("\n"), /library binding is BLOCKED/);
+
+    const forbiddenSubstitute = clone(selectionRecord);
+    forbiddenSubstitute.parts[0].libraryBinding = {
+      ...forbiddenSubstitute.parts[0].libraryBinding,
+      resolution: "APPROVED_SUBSTITUTE",
+      substitutionPolicy: "FORBID",
+      requestedManufacturerPartNumber: "ORIGINAL-MCU-1",
+      reason: "test unauthorized substitution",
+      approvalReference: "MISSING-VALID-AUTHORIZATION",
+      candidateComparisonArtifact: selectionPdfPath,
+      comparison: {
+        electrical: "MATCH",
+        pinout: "MATCH",
+        package: "MATCH",
+        footprint: "MATCH",
+        thermal: "MATCH",
+        mechanical: "MATCH",
+        firmware: "MATCH",
+        regulatory: "MATCH",
+      },
+    };
+    const forbiddenSubstituteResult = validateComponentEvidenceRecord(
+      forbiddenSubstitute,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(forbiddenSubstituteResult.decision, BASELINE_DECISIONS.FAIL);
+    assert.match(forbiddenSubstituteResult.violations.join("\n"), /FORBID/);
+
+    const wrongFootprintBinding = clone(selectionRecord);
+    wrongFootprintBinding.parts[0].libraryBinding.footprintUuid = "different-fp";
+    const wrongFootprintBindingResult = validateComponentEvidenceRecord(
+      wrongFootprintBinding,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(wrongFootprintBindingResult.decision, BASELINE_DECISIONS.FAIL);
+    assert.match(
+      wrongFootprintBindingResult.violations.join("\n"),
+      /live footprint UUID differs/,
+    );
+    const selectionPass = analyzeBaseline(
+      selectionRaw,
+      {
+        ...parseBaselineArgs([]),
+        componentEvidenceRecord: selectionRecord,
+        componentEvidenceBaseDir: tempDir,
+      },
+      { kind: "test" },
+    );
+    assert.equal(selectionPass.decision, BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS);
+
+    for (const accessStatus of [
+      "ACCESS_BLOCKED",
+      "DOWNLOAD_FAILED",
+      "CONTENT_UNREADABLE",
+      "VARIANT_MISMATCH",
+      "STALE_REVISION",
+    ]) {
+      const unavailable = clone(selectionRecord);
+      unavailable.sources.primary.accessStatus = accessStatus;
+      const result = validateComponentEvidenceRecord(unavailable, selectionRaw, {
+        baseDir: tempDir,
+      });
+      assert.equal(result.cleared, false, accessStatus);
+      assert.match(result.unverified.join("\n"), new RegExp(accessStatus));
+    }
+
+    const wrongMpn = clone(selectionRecord);
+    wrongMpn.parts[0].manufacturerPartNumber = "WRONG-MPN";
+    const wrongMpnReport = analyzeBaseline(
+      selectionRaw,
+      {
+        ...parseBaselineArgs([]),
+        componentEvidenceRecord: wrongMpn,
+        componentEvidenceBaseDir: tempDir,
+      },
+      { kind: "test" },
+    );
+    assert.equal(wrongMpnReport.decision, BASELINE_DECISIONS.FAIL);
+
+    const staleFingerprint = clone(selectionRecord);
+    staleFingerprint.schematic.designFingerprint = "sha256:stale";
+    const staleSelection = validateComponentEvidenceRecord(
+      staleFingerprint,
+      selectionRaw,
+      { baseDir: tempDir },
+    );
+    assert.equal(staleSelection.cleared, false);
+    assert.match(staleSelection.unverified.join("\n"), /fingerprint/);
+
+    const distributorOnly = clone(selectionRecord);
+    distributorOnly.sources.primary.authority = "DISTRIBUTOR_COPY";
+    assert.equal(
+      validateComponentEvidenceRecord(distributorOnly, selectionRaw, {
+        baseDir: tempDir,
+      }).cleared,
+      false,
+    );
+
+    const noArtifact = clone(selectionRecord);
+    delete noArtifact.sources.primary.artifactPath;
+    assert.equal(
+      validateComponentEvidenceRecord(noArtifact, selectionRaw, {
+        baseDir: tempDir,
+      }).cleared,
+      false,
+    );
+
+    const zeroPath = path.join(tempDir, "zero.pdf");
+    writeFileSync(zeroPath, Buffer.alloc(0));
+    assert.equal(
+      validateSelectionArtifact(
+        { ...selectionRecord.sources.primary, artifactPath: zeroPath },
+        tempDir,
+      ).valid,
+      false,
+    );
+
+    const corruptPath = path.join(tempDir, "corrupt.pdf");
+    const corruptContent = Buffer.from("%PDF-1.4\ntruncated");
+    writeFileSync(corruptPath, corruptContent);
+    assert.match(
+      validateSelectionArtifact(
+        {
+          ...selectionRecord.sources.primary,
+          artifactPath: corruptPath,
+          sha256: sha256Buffer(corruptContent),
+        },
+        tempDir,
+      ).problems.join("\n"),
+      /end marker/,
+    );
+
+    const loginPath = path.join(tempDir, "login.html");
+    const loginContent = Buffer.from(
+      "<!doctype html><html><title>Sign in</title>Sign in to continue</html>",
+    );
+    writeFileSync(loginPath, loginContent);
+    assert.match(
+      validateSelectionArtifact(
+        {
+          ...selectionRecord.sources.primary,
+          artifactPath: loginPath,
+          sha256: sha256Buffer(loginContent),
+          mediaType: "text/html",
+        },
+        tempDir,
+      ).problems.join("\n"),
+      /login, denial, or block page/,
+    );
+
+    const encryptedPath = path.join(tempDir, "encrypted.pdf");
+    const encryptedContent = Buffer.from(
+      "%PDF-1.4\n1 0 obj<</Encrypt 2 0 R>>endobj\n%%EOF\n",
+    );
+    writeFileSync(encryptedPath, encryptedContent);
+    assert.match(
+      validateSelectionArtifact(
+        {
+          ...selectionRecord.sources.primary,
+          artifactPath: encryptedPath,
+          sha256: sha256Buffer(encryptedContent),
+        },
+        tempDir,
+      ).problems.join("\n"),
+      /encrypted PDF/,
+    );
+
+    const hashMismatch = validateSelectionArtifact(
+      { ...selectionRecord.sources.primary, sha256: "0".repeat(64) },
+      tempDir,
+    );
+    assert.match(hashMismatch.problems.join("\n"), /sha256/);
+
     const clearedPath = path.join(tempDir, "hs-clear.json");
     writeFileSync(
       clearedPath,
@@ -1014,6 +2051,32 @@ function runTests() {
       true,
     );
 
+    const highSpeedFreeCopperFixture = selfTestFixture();
+    highSpeedFreeCopperFixture.pours[0].preserveSilos = false;
+    highSpeedFreeCopperFixture.drc = [
+      {
+        name: "Connection Error",
+        list: [
+          {
+            errorType: "No Connection",
+            isFree: true,
+            objs: ["fill1"],
+          },
+        ],
+      },
+    ];
+    const highSpeedFreeCopperFail = analyze(
+      highSpeedFreeCopperFixture,
+      highSpeedOptions(withArtifacts),
+      { kind: "test" },
+    );
+    assert.equal(highSpeedFreeCopperFail.decision, DECISIONS.FAIL);
+    assert.equal(highSpeedFreeCopperFail.checks.pours[0].passed, false);
+    assert.equal(
+      highSpeedFreeCopperFail.checks.pours[0].islandStatus,
+      "FREE_COPPER_DETECTED",
+    );
+
     const boundedPairRecord = clone(withArtifacts);
     boundedPairRecord.interfaces[0].pairs[0].localFanInException = {
       allowLayerMismatch: true,
@@ -1086,12 +2149,20 @@ function runTests() {
       manufacturingNetlistArtifact,
       JSON.stringify({
         kind: "easyeda-manufacturing-netlist-comparison",
-        decision: "MISMATCH",
+        decision: "MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION",
         manufacturingDecision: "MATCH",
         fabricationRelease: false,
+        project: { uuid: "self-test" },
         pcb: { uuid: "pcb-self-test" },
         schematic: { uuid: "sch-self-test" },
         comparison: { match: true },
+        pcbDataPlaneIntegrity: { match: true },
+        nativeFileComparison: [],
+        nativeCacheException: {
+          status: "VERIFIED",
+          issues: [],
+          interpretation: "self-test verified native cache false negative",
+        },
       }),
       "utf8",
     );
@@ -1450,7 +2521,12 @@ async function testBaselineCollectorFiltersNetports() {
     getState_ComponentType: () => "part",
     getState_PrimitiveId: () => "part-1",
     getState_Designator: () => "U1",
+    getState_UniqueId: () => "unique-u1",
     getState_Name: () => "MCU",
+    getState_Manufacturer: () => "Example Semiconductor",
+    getState_ManufacturerId: () => "EXAMPLE-MCU-1",
+    getState_Supplier: () => "Example Distributor",
+    getState_SupplierId: () => "D123",
     getState_AddIntoPcb: () => true,
     getState_Footprint: () => ({ uuid: "fp-1" }),
   };
@@ -1459,8 +2535,17 @@ async function testBaselineCollectorFiltersNetports() {
     getState_PrimitiveId: () => "netport-1",
     getState_Designator: () => "",
     getState_Name: () => "+3V3",
+    getState_Net: () => "+3V3",
+    getState_X: () => 100,
+    getState_Y: () => 100,
+    getState_Rotation: () => 0,
     getState_AddIntoPcb: () => undefined,
     getState_Footprint: () => undefined,
+  };
+  const wire = {
+    getState_PrimitiveId: () => "wire-1",
+    getState_Net: () => "+3V3",
+    getState_Line: () => [0, 0, 40, 0],
   };
   const eda = {
     dmt_Project: {
@@ -1474,13 +2559,18 @@ async function testBaselineCollectorFiltersNetports() {
       }),
     },
     sch_PrimitiveComponent: { getAll: async () => [part, netport] },
-    sch_PrimitiveWire: { getAll: async () => [{}, {}] },
+    sch_PrimitiveWire: { getAll: async () => [wire, wire] },
     sch_Drc: { check: async () => [] },
   };
   const result = await new AsyncFunction("eda", baselineCollectorCode())(eda);
   assert.equal(result.kind, "schematic");
   assert.equal(result.components.length, 1);
   assert.equal(result.components[0].designator, "U1");
+  assert.equal(result.components[0].manufacturerPartNumber, "EXAMPLE-MCU-1");
+  assert.equal(result.schematicAnnotations.length, 1);
+  assert.equal(result.schematicAnnotations[0].net, "+3V3");
+  assert.equal(result.schematicWires.length, 2);
+  assert.deepEqual(result.schematicWires[0].line, [0, 0, 40, 0]);
 }
 
 async function testMultipleWindowGuard() {

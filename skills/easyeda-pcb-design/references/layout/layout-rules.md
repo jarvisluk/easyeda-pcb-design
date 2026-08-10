@@ -16,6 +16,19 @@
   [constraint-planning.md](constraint-planning.md) before applying these local
   electrical and assembly priorities.
 - Mechanical constraints override cosmetic alignment.
+- Place by mechanical and electrical function, not package identity. Do not
+  attract otherwise unrelated parts because they share a footprint. After
+  ordinary passives are already co-located by a functional block, package
+  identity may guide consistent orientation and spacing for assembly only when
+  it does not lengthen connections, enlarge loops, consume escape space, or
+  obscure differing values.
+- Around pad-dense core modules and major ICs, reserve usable escape space on
+  every side that carries connections; do not pack unrelated parts against the
+  pad rows before a representative fanout and routing canary proves the paths.
+  Size the space from the exact footprint, connection count and direction,
+  trace/via/clearance rules, and layer plan rather than a universal distance.
+  Allow only parts that must remain electrically close to occupy it, and verify
+  that they do not block the required escapes.
 - Protection belongs at the external energy entry point.
 - Decoupling loop area matters more than matching a visual grid.
 - Switch-mode regulator hot loops must be compact.
@@ -24,11 +37,15 @@
   intended ground/counterpoise before ordinary placement. Use the exact
   module/radio reference rather than a generic clearance distance.
 - For a module with an integrated antenna, face the antenna end outward and
-  prefer the approved board-edge/overhang placement. If the antenna must remain
-  over the host PCB, reproduce the vendor's all-layer clearance or physical
-  board cutout exactly; copper keepout and laminate removal are different
-  constructions.
-- Put connectors where orientation and mating access are unambiguous.
+  prefer a vendor-approved physical cutout that keeps the complete module
+  within the board's external dimensions. Use overhang only when the exact
+  module guide requires it or no approved in-outline construction is feasible,
+  and record its increase to the maximum board/module envelope. Reproduce the
+  exact all-layer clearance and cutout; copper keepout and laminate removal are
+  different constructions.
+- Put connectors where orientation and mating access are unambiguous. Select
+  gender, pitch, height, keying, and population from the recorded mating
+  architecture; never infer them from whichever library model looks convenient.
 
 ## Routing priority
 
@@ -89,7 +106,15 @@
   consistency rule; its electrical consequence depends on edge rate and geometry.
 - Do not leave arbitrary slopes created by dragging endpoints.
 - Keep widths stable; neck down only where pads or verified constraints require it.
-- Avoid dead ends, branches, unnecessary layer changes, and vias inside pads unless the process supports them.
+- Avoid dead ends, branches, and unnecessary layer changes.
+- For every ordinary via, use the recorded standard outer diameter and hole
+  diameter, then keep its copper edge at least the recorded via-to-pad copper
+  clearance from every pad. Check the full pad shape rather than component
+  origins, check drill-edge intrusion separately, and do not rely on a same-net
+  DRC exemption to justify overlap.
+- Treat via-in-pad or any intentional via/pad overlap as a special construction,
+  not an ordinary via. Use it only when the land pattern and declared assembly
+  process support the required fill, cap, planarization, mask, and paste policy.
 - Do not treat a clean DRC as proof of a good return path.
 
 ## Routing topology
@@ -128,7 +153,28 @@
 
 - Create the pour after critical routing, then rebuild it after every later edit.
 - Verify the generated fill primitive; a visible boundary alone is insufficient.
-- Disable retained islands by default.
+- Treat every generated `fill === true` record as a separate copper region.
+  Disable retained islands by default, but do not treat that setting as proof
+  that every generated region is connected.
+- After each rebuild, bind every solid-fill ID and correlate it with detailed
+  DRC. Overlap with same-net copper on another layer is not a connection; require
+  a same-net pad, track, plated hole, or via that actually joins the region.
+- For each disconnected region, choose exactly one disposition:
+  1. remove it by changing the source-Pour boundary, clearance/keepout, priority,
+     or island policy, then rebuild;
+  2. when the region improves current spreading, return continuity, shielding,
+     or thermal behavior, connect it deliberately with a rule-compliant same-net
+     pad, neck, or stitching via outside every specialized keepout, then rebuild;
+  3. when an electrically isolated electrode, heat spreader, coupon, or other
+     floating copper feature is intentional, represent and review it as a
+     separately named feature with documented geometry, clearance, EMC/thermal
+     purpose, and DRC disposition. Never count it as a valid reference or power
+     pour.
+- Do not add a decorative via merely to silence a free-copper result. Verify the
+  resulting current/return path, clearance, manufacturability, and intended net.
+- Do not apply a universal island-area threshold. Remove narrow slivers and
+  nonfunctional fragments using the selected fabricator's geometry limits;
+  retain only regions whose connection and engineering purpose are proven.
 - Inspect thermal-relief current capacity and solderability.
 - Check that the pour did not create narrow slivers, unintended antennas, or blocked clearances.
 - For an onboard antenna, verify generated fill on every layer against the
@@ -150,11 +196,31 @@
   pads intentionally overlap body/terminal geometry. Validate the exact
   datasheet land pattern and require the intended solder fillet, paste, and
   rework access for the chosen assembly process.
-- Prevent one component's physical body/courtyard from intruding into another
-  component's assembly space. Use package-pair spacing from the assembler; for
-  JLCPCB assembly, consult its current package-to-package spacing table rather
-  than one global value.
+- A component's board occupancy is its sourced courtyard plus every live pad,
+  not just its visible body. Long switch terminals, connector tails,
+  castellations, thermal tabs, and through-hole annular rings can extend well
+  beyond the body. Prove every own pad is inside the sourced courtyard, then
+  check each pad against all foreign pads and courtyards on the applicable side,
+  including the sourced copper-clearance floor before routing.
+- Through-hole/multilayer pads occupy both sides. Require a sourced
+  opposite-side courtyard for connector tails, stakes, plastic, or other body
+  projection below the owner side and per-pad `MAXIMUM_COPPER_PROJECTION`
+  evidence; otherwise placement remains unresolved.
+- Bind pads by both designator and parent component primitive ID. Bottom-side
+  component-local courtyards need the declared mirror-then-rotate transform;
+  missing identity or transform evidence is unresolved.
+- Prevent one component's sourced courtyard from intruding into another
+  component's assembly space. Construct courtyards from the exact land pattern,
+  body/lead tolerances, solder fillets, and package-pair spacing from the
+  assembler; for JLCPCB assembly, consult its current package-to-package spacing
+  table rather than one global value.
 - Check silkscreen clipping, reference/polarity visibility, and 3D body overlap.
+- Group same-function operator controls only when the recorded interaction
+  decision calls for it. A separated control requires a mechanical/functional
+  rationale; a grouped control requires a sourced access and spacing envelope.
+- Minimize orderable variants through a declared package and connector-family
+  policy. Different pin-count parts in one connector series are not a generic
+  failure; undeclared gender/series/height changes or unsupported exceptions are.
 - Keep copper away from board edges and unplated slots according to the process rule.
 - Verify fiducials, tooling needs, panel breakaway zones, and component-to-edge clearance when assembling.
 - Review Gerber, drill, BOM, and pick-and-place outputs rather than assuming export success.

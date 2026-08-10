@@ -245,11 +245,16 @@ via IDs, require a positive `maxDistanceMil`, reason, and artifact, and fail if
 the referenced via disappears. Stale exceptions are hard failures.
 
 `nativeNetlistCacheException` is narrower still: its JSON artifact must be an
-`easyeda-manufacturing-netlist-comparison` with `comparison.match=true`, a PCB
-UUID equal to the active document, and `fabricationRelease=false`. It may clear
-only leaf errors whose exact type is `Netlist Error` and rule is
-`Import Changes`; any clearance, connection, geometry, free-copper, or other
-DRC leaf rejects it.
+`easyeda-manufacturing-netlist-comparison` whose decision is literal `MATCH` or
+the complete `MATCH_WITH_VERIFIED_NATIVE_CACHE_EXCEPTION` contract. It must
+prove `manufacturingDecision=MATCH`, `comparison.match=true`, exact nonempty
+project/schematic/PCB UUIDs, `fabricationRelease=false`, and, for the exception
+path, `nativeCacheException.status=VERIFIED` with no issues,
+`pcbDataPlaneIntegrity.match=true`, and an empty native File-to-File difference
+array. Project and PCB UUIDs must equal the active revision. It may clear only
+leaf errors whose exact type is `Netlist Error` and rule is `Import Changes`;
+the raw leaf is retained, and any clearance, connection, geometry, free-copper,
+or other DRC leaf rejects it.
 
 For an existing-board geometry repair, this exception may prevent a known
 native cache defect from blocking the edit transaction, but it never asserts
@@ -257,10 +262,11 @@ native cache defect from blocking the edit transaction, but it never asserts
 bounded repair, and reject the exception if component identity, pad-net binding,
 or any non-cache DRC result changes.
 
-Runtime `preserveSilos=true` is not by itself a failure when concrete solid
-fill IDs exist and detailed DRC reports no free-copper error targeting those
-IDs. This is an evidence-backed workaround for an unreliable beta readback,
-not permission to preserve unknown islands.
+Runtime `preserveSilos=true` is not by itself a failure when the unique solid-
+fill ID count equals the solid-fill count and detailed DRC reports no free-
+copper error targeting any ID. This is an evidence-backed workaround for an
+unreliable beta readback, not permission to preserve unknown islands. A single
+connected fill does not clear a disconnected sibling region from the same Pour.
 
 ## Decision behavior
 

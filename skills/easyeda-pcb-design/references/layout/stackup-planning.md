@@ -5,8 +5,10 @@
 - Required inputs
 - Run the layer-count decision
 - Estimate routing and escape demand
+- Derive functional demand partitions
 - Screen common candidate ranges
 - Compare candidates and report the decision
+- Freeze the machine-readable decision
 - Select layer roles
 - Reference and return-path mapping
 - Materials and controlled impedance
@@ -131,6 +133,32 @@ representative fanout canary. If the canary cannot escape each required ball
 region while preserving reference and power access, increase layers, change
 the via/process, change the package, or revise placement before continuing.
 
+## Derive functional demand partitions
+
+Summarize the demand ledger under four partitions before generating candidates:
+
+1. `routingEscape` — ordinary and constrained corridors, dense-package escape,
+   tuning area, and declared routing reserve;
+2. `referenceReturn` — continuous reference regions, reference transitions,
+   shielding, and signal-layer permissions;
+3. `powerIsolationThermalShielding` — rail area/current, isolation, current
+   spreading, thermal copper, and product-level shielding functions;
+4. `manufacturingMechanical` — supported constructions, balance, thickness,
+   warpage, via sequence, registration, and reliability requirements.
+
+For each partition, record its basis, the minimum dedicated-layer demand used
+to screen candidates, and every condition under which a layer may safely share
+functions. These partition values are explanatory floors, not quantities to
+sum mechanically: a mixed-role layer counts only when its exact regions,
+permissions, reference behavior, and canaries prove that the functions can
+coexist. Name the partition and exact requirement that sets the selected
+candidate's floor.
+
+Do not encode frequency-to-layer-count, interface-to-layer-count, package-pin
+count, or named-template shortcuts as decision rules. They may identify a
+candidate to study, but edge rate, geometry, populated pin map, floorplan,
+reference continuity, process, and representative routes decide feasibility.
+
 ## Screen common candidate ranges
 
 Use these as screening gates, not fixed templates or interface-to-layer-count
@@ -159,14 +187,31 @@ A named interface alone does not mandate a layer count. Package, edge rate,
 route length, return geometry, loss/EMC target, board area, and fabrication
 construction determine whether the candidate works.
 
+Use these only as escalation diagnostics, not default constructions:
+
+- a two-to-four-layer escalation commonly resolves a reference-continuity,
+  power-distribution, shielding, or controlled-geometry failure;
+- a four-to-six-layer escalation commonly resolves a routing-corridor,
+  dense-escape, or noisy/sensitive separation conflict that cannot coexist
+  with the required planes;
+- a six-to-eight-or-higher escalation commonly resolves independently
+  referenced signal-layer, rail/plane, shielding, HDI, or high-risk SI demand.
+
+For every escalation, state which named functions the added layers solve. If
+the added layers provide only unspecified convenience, the higher candidate is
+not justified.
+
 ## Compare candidates and report the decision
 
-Compare at least the lowest plausible candidate and the next higher practical
-candidate. Use one row per candidate:
+Compare at least the lowest plausible candidate, the selected candidate, and
+the next higher practical candidate. When the lowest candidate is selected,
+two candidates are sufficient. The immediate next-higher comparison must
+remain technically usable or explicitly conditional/unresolved; an infeasible
+or stale row does not demonstrate available headroom. Use one row per candidate:
 
-| Candidate | Exact layer functions | Closed gates | Open assumptions/canaries | Process and cost impact | State and decisive reason |
-| --- | --- | --- | --- | --- | --- |
-| `<N layers>` | `<one role per layer>` | `<evidence>` | `<named unknowns>` | `<fabricator-specific delta>` | `<SELECTABLE / CONDITIONAL / INFEASIBLE / UNRESOLVED>` |
+| Candidate | Exact layer functions | Added layers solve | Gate results and evidence | Candidate floorplan/canaries | Process and cost impact | State and decisive reason |
+| --- | --- | --- | --- | --- | --- | --- |
+| `<N layers>` | `<one role per layer>` | `<named functions>` | `<closed/failed/open gates>` | `<candidate-specific artifacts>` | `<fabricator-specific delta>` | `<SELECTABLE / CONDITIONAL / INFEASIBLE / UNRESOLVED>` |
 
 Do not use a weighted score that allows cost or routing convenience to cancel a
 reference, isolation, escape, thermal, or manufacturing violation. Rank only
@@ -180,6 +225,7 @@ Return every layer-count decision in this form:
 Decision status: <SELECTABLE | CONDITIONAL | INFEASIBLE | UNRESOLVED | STALE>
 Recommended planning layer count: <number | provisional range | not yet determinable>
 Lowest candidate evaluated: <number and disposition>
+Demand partitions: <routing/escape, reference/return, power/isolation/thermal/shielding, manufacturing/mechanical>
 Decisive constraints: <requirements that set the floor>
 Lower-candidate rejection: <specific failed gate, or not applicable>
 Next-higher comparison: <risk/headroom gained and process/cost paid>
@@ -193,6 +239,172 @@ Planning only: This recommendation is not fabrication authorization.
 Store the same fields under `layerCountDecision` in the project constraint
 record. Keep the full candidate table or link its revision-controlled artifact;
 do not preserve only the winning number.
+
+Use these failure-gate identifiers in the candidate artifact so a lower-board
+rejection is comparable and checkable:
+
+`ROUTING_CAPACITY`, `PACKAGE_ESCAPE`, `REFERENCE_CONTINUITY`,
+`POWER_PLANE_AREA`, `ISOLATION`, `THERMAL`, `SHIELDING_EMC`,
+`IMPEDANCE_GEOMETRY`, `VIA_PROCESS`, `MECHANICAL_BALANCE`,
+`MANUFACTURING`, and `DESIGN_MARGIN`.
+
+Every failed gate records a reason, evidence artifact, and smallest useful
+remedy. Every closed gate records its evidence. An open gate names the missing
+canary or input. Cost and process impact remain comparison data, never a gate
+override.
+
+## Freeze the machine-readable decision
+
+Store the full comparison in `stackup-candidates.json` and validate it with:
+
+```bash
+python3 scripts/easyeda_stackup_decision_lint.py \
+  --record path/to/stackup-candidates.json \
+  --output path/to/evidence/audits/stackup-decision-consistency.json
+```
+
+The record is authoritative for these fields:
+
+- `schemaVersion: 1`, `kind`, exact `revision`, decision `status`, `recommendedLayerCount`,
+  `decisiveConstraints`, `reserveBasis`, and `invalidatedBy`;
+- the four `demandPartitions`, each with `minimumDedicatedLayers`, `basis`, and
+  `sharedRoleConditions`;
+- `applicableGates` and at least the lowest plausible and next-higher practical
+  candidates required by the comparison rule above;
+- for each candidate: `layerCount`, `state`, `constructionSource`, ordered
+  `layerFunctions`, `addedLayersSolve`, complete `gateResults`, labeled
+  `openAssumptions`, `requiredCanaries`, `floorplanArtifact`,
+  `canaryArtifacts`, and `processCostImpact`.
+
+Use this abbreviated structural shape. It shows one infeasible lower candidate,
+not a complete selectable decision; repeat each applicable gate exactly once
+for every candidate and add the selected and next-higher candidates for the
+complete comparison:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "easyeda-stackup-decision",
+  "revision": "exact PCB revision or planning fingerprint",
+  "status": "INFEASIBLE",
+  "recommendedLayerCount": null,
+  "demandPartitions": {
+    "routingEscape": {
+      "minimumDedicatedLayers": 2,
+      "basis": ["candidate-specific corridor and escape study"],
+      "sharedRoleConditions": ["sourced condition for safe sharing"]
+    },
+    "referenceReturn": {
+      "minimumDedicatedLayers": 1,
+      "basis": ["continuous-return requirement"],
+      "sharedRoleConditions": []
+    },
+    "powerIsolationThermalShielding": {
+      "minimumDedicatedLayers": 1,
+      "basis": ["rail area/current and thermal study"],
+      "sharedRoleConditions": []
+    },
+    "manufacturingMechanical": {
+      "minimumDedicatedLayers": 0,
+      "basis": ["fabricator-supported balanced construction"],
+      "sharedRoleConditions": []
+    }
+  },
+  "decisiveConstraints": ["requirement setting the selected floor"],
+  "reserveBasis": "project-specific reserve and rationale",
+  "invalidatedBy": ["outline", "package", "process"],
+  "applicableGates": ["ROUTING_CAPACITY", "REFERENCE_CONTINUITY"],
+  "candidates": [
+    {
+      "layerCount": 2,
+      "state": "INFEASIBLE",
+      "constructionSource": "fabricator construction and revision",
+      "layerFunctions": [
+        {
+          "name": "Top Layer",
+          "role": "primary-signal",
+          "references": [
+            {
+              "layer": "Bottom Layer",
+              "region": "GND",
+              "continuityEvidence": "evidence/path/return-canary.json"
+            }
+          ]
+        },
+        {"name": "Bottom Layer", "role": "continuous-reference"}
+      ],
+      "addedLayersSolve": [],
+      "gateResults": [
+        {
+          "gate": "ROUTING_CAPACITY",
+          "status": "FAILED",
+          "reason": "candidate-specific failure",
+          "evidence": "evidence/path/failed-route-canary.json",
+          "minimalRemedy": "smallest useful layer, process, or placement revision"
+        },
+        {
+          "gate": "REFERENCE_CONTINUITY",
+          "status": "CLOSED",
+          "reason": "candidate-specific closure",
+          "evidence": "evidence/path/reference-canary.json"
+        }
+      ],
+      "openAssumptions": [
+        {"assumption": "labeled non-decisive assumption", "decisive": false}
+      ],
+      "requiredCanaries": [],
+      "floorplanArtifact": "evidence/path/2l-floorplan.json",
+      "canaryArtifacts": ["evidence/path/2l-canaries.json"],
+      "processCostImpact": "fabricator-specific cost/process disposition"
+    }
+  ]
+}
+```
+
+For an `OPEN` gate, replace `evidence` with `missingEvidence` and list the
+pending operation under `requiredCanaries`. For a `STALE` gate, retain the old
+evidence so the invalidated basis remains traceable. Every candidate above the
+lowest includes at least one supported gate identifier in `addedLayersSolve`.
+
+Use only these layer roles: `primary-signal`, `limited-signal`,
+`continuous-reference`, `power-distribution`, `mixed-power-reference`, and
+`forbidden`. Every signal layer declares one or two adjacent references. Each
+reference names its layer, net/region, and continuity evidence. Referencing a
+power-distribution region also requires local high-frequency return evidence.
+A limited-signal layer declares an explicit net allow-list or a quantitative
+routed-length-share limit. Adjacent signal layers require broadside-coupling
+evidence; orthogonal preferred directions alone do not close that gate.
+
+Every candidate uses its own floorplan and canary artifacts. These artifacts
+cover fixed interfaces, core/dense packages, critical companions, reserved
+corridors, noisy/sensitive and high-current regions, tuning space, escape,
+return, power, thermal, and assembly constraints applicable to that candidate.
+Do not reuse an abstract floorplan as proof for materially different layer or
+via constructions.
+
+For a `SELECTABLE` decision, every lower candidate is `INFEASIBLE` with a
+failed-gate remedy, the selected candidate has no failed/open gates or pending
+canaries, every remaining assumption is explicitly non-decisive, and a
+next-higher candidate shows the headroom and process/cost delta. The validator
+fingerprints the record and selected layer table; its exit code never authorizes
+fabrication.
+
+When the PCB does not yet exist, use the planning fingerprint and
+`planningRevision` basis defined in
+[constraint-planning.md](constraint-planning.md). Once an actual saved/reopened
+PCB exists, issue a new PCB-fingerprint-bound candidate record and validation;
+do not mutate or rename the planning artifact.
+
+After a package, placement, interface, outline, process, or routing-demand
+change, mark the prior decision `STALE` first. Reuse immutable source files and
+candidate gate results only when their declared inputs and fingerprints are
+unchanged. Re-evaluate every affected candidate/gate, write a new complete
+decision record, and rerun both linters. Repeat the full candidate comparison
+when the change can alter the minimum feasible layer count, layer roles,
+reference continuity, selected construction, or next-higher headroom. A local
+change may use a scoped gate/canary recheck only when the record proves those
+selection dependencies are unchanged; the aggregate decision still gets a new
+fingerprint-bound validation.
 
 Stop at `CONDITIONAL` or `UNRESOLVED` and request the missing input when any of
 these can alter the result:

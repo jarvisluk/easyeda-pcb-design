@@ -10,6 +10,7 @@
 - Layer strategy
 - Routing geometry
 - Assembly geometry
+- Placement closure
 - Human-operated controls
 - External interfaces
 - Evidence and change control
@@ -48,24 +49,37 @@ fabrication evidence merely because it was encoded as a DRC rule.
 
 Before ordinary placement, convert every explicit user request for board size,
 shape, component location, edge, orientation, or access into a hard candidate
-constraint and test it. Use this floorplan priority:
+constraint and test it. Use this dependency order to build candidate floorplans;
+iterate earlier decisions when a later functional or routing canary exposes a
+better feasible arrangement:
 
 1. Determine a provisional board outline, mounting holes, enclosure/panel
    interfaces, forbidden regions, edge clearances, and height limits. If the
    user specifies the outline, preserve it as a candidate until the joint gate
    below proves that it fits.
-2. Fix user-specified and mechanically constrained interfaces: pin headers,
-   USB and other connectors, switches/buttons, displays/indicators, cable exits,
-   and parts that must align to an opening or mating feature.
-3. Place core modules and major ICs. Preserve antenna edge/orientation/keepouts,
-   module access, thermal space, escape direction, and direct paths to the fixed
-   interfaces. A module with a mechanically fixed interface belongs in step 2.
+2. Fix only interfaces whose location or orientation is required by an explicit
+   user request, enclosure/panel/mating geometry, operator-access evidence, or
+   an exact vendor integration rule. A part category alone is not a fixed
+   constraint: generic pin headers, connectors, switches/buttons,
+   displays/indicators, and cable exits remain movable when that evidence is
+   absent.
+3. Place core modules and major ICs jointly with every still-movable interface.
+   Preserve antenna edge/orientation/keepouts, module access, thermal space,
+   escape direction, and short critical paths. A module with a proven fixed
+   interface belongs in step 2.
    For a module with an integrated antenna, apply
    [onboard-antenna.md](../specialized/onboard-antenna.md) before accepting its position.
 4. Place the protection, power, clock, termination, matching, sensing, and
    decoupling parts that must remain near those anchors or form compact loops.
 5. Partition and place the remaining functional blocks; optimize ordinary
    passives and cosmetic alignment only after higher-priority constraints hold.
+
+For a new board with more than one credible anchor arrangement and no supplied
+mechanics that selects one, compare at least two coarse floorplans before
+freezing. Compare weighted critical and total connection length, ratsnest
+crossings, loop area, package escape, representative route and return-path
+canaries, assembly/access envelopes, and usable-area distribution. Do not
+freeze the first sequence-compliant arrangement merely because every part fits.
 
 Do not judge fit from summed component area. Use exact verified footprints and
 body/courtyard envelopes, then include holes, edge and antenna keepouts,
@@ -158,8 +172,21 @@ either participating constraint or the shared resource makes the resolution
 ## Freeze the aggregate PCB entry gate
 
 Create a revision-controlled project constraint record before placing ordinary
-components. Do not route from an unwritten convention. The brief may supply the
+components. Do not route from an unwritten convention. The lint-cleared,
+fingerprint-bound requirements baseline may supply the
 values, but the record must make them machine- or review-checkable.
+
+Before a production PCB UUID exists, bind planning artifacts to a deterministic
+`planning:sha256:<hex>` revision. The hashed canonical `planningRevision` object
+contains the project UUID, schematic-page UUID and fingerprint, outline-
+candidate ID, exact footprint-set fingerprint, interface-decision fingerprint,
+and process-profile fingerprint. Every stackup, floorplan, escape, return,
+assembly, and constraint artifact for that candidate uses the same value. This
+is planning identity, not a PCB revision. After creating and saving/reopening the
+PCB, preserve those artifacts, generate a new record bound to the real PCB
+fingerprint, rerun its canaries and both linters, and obtain
+`CLEARED_FOR_PLACEMENT` again. Never relabel planning evidence as PCB-bound;
+post-placement closure rejects it.
 
 At minimum freeze together:
 
@@ -168,12 +195,16 @@ At minimum freeze together:
 - each explicit user placement requirement, its source, feasibility status,
   conflicts, and accepted disposition;
 - the layer-count decision, candidate comparison, decisive constraints,
-  assumptions, and canary/evidence gates required by
+  demand partitions, assumptions, canary/evidence gates, and the current
+  stackup-decision validation artifact required by
   [stackup-planning.md](stackup-planning.md);
 - board layer count, exact layer names, copper/plane roles, and intended adjacent
   reference for every signal layer;
 - which routing layers are primary, limited, reference-only, or forbidden;
 - allowed segment directions and hard-corner policy;
+- the ordinary-via outer diameter, hole diameter, and minimum edge-to-edge
+  copper clearance between the via and any pad, with units and the selected
+  fabricator/rule source;
 - fabricator and assembler rule sources with revision/date;
 - silkscreen-to-mask/pad clearance, component-spacing source, courtyard/body
   policy, board-edge and rework requirements;
@@ -189,11 +220,14 @@ number. Stop before placement when it can change board outline, layer count,
 connector/module location, antenna keepout, or routing corridors.
 
 Store the baseline record as `layout-constraints.json` in the project evidence
-tree. A minimal record has this shape; replace every example value and source:
+tree. Read [placement-closure.md](placement-closure.md) for the authoritative
+post-placement schema and audit semantics. A minimal record has this shape;
+replace every example value and source:
 
 ```json
 {
-  "revision": "pcb-revision-or-fingerprint",
+  "revision": "exact PCB fingerprint or planning:sha256:<hex>",
+  "planningRevision": null,
   "pcbEntryGate": {
     "status": "UNRESOLVED"
   },
@@ -210,7 +244,7 @@ tree. A minimal record has this shape; replace every example value and source:
         "reference": "J1",
         "role": "USB connector",
         "constraint": "edge/orientation/access envelope",
-        "source": "user brief + part/enclosure evidence"
+        "source": "lint-cleared requirements baseline + part/enclosure evidence"
       }
     ],
     "proofArtifact": "revision-controlled floorplan or clearance-study path",
@@ -230,7 +264,39 @@ tree. A minimal record has this shape; replace every example value and source:
     "recommendedLayerCount": null,
     "provisionalRange": null,
     "candidateComparisonArtifact": "revision-controlled relative path",
+    "validationArtifact": "write-once stackup-decision consistency report",
+    "demandPartitions": {
+      "routingEscape": {
+        "minimumDedicatedLayers": 2,
+        "basis": ["candidate-specific corridor and escape study"],
+        "sharedRoleConditions": ["sourced condition for safe sharing"]
+      },
+      "referenceReturn": {
+        "minimumDedicatedLayers": 1,
+        "basis": ["continuous-return requirement"],
+        "sharedRoleConditions": []
+      },
+      "powerIsolationThermalShielding": {
+        "minimumDedicatedLayers": 1,
+        "basis": ["rail area/current, isolation, and thermal study"],
+        "sharedRoleConditions": []
+      },
+      "manufacturingMechanical": {
+        "minimumDedicatedLayers": 0,
+        "basis": ["fabricator-supported balanced construction"],
+        "sharedRoleConditions": []
+      }
+    },
     "decisiveConstraints": ["requirement that sets the layer-count floor"],
+    "lowerCandidateRejection": [
+      {
+        "gate": "REFERENCE_CONTINUITY",
+        "reason": "candidate-specific failed requirement",
+        "evidence": "revision-controlled failed-canary artifact"
+      }
+    ],
+    "nextHigherComparison": "headroom gained and process/cost paid",
+    "reserveBasis": "project-specific ECO, variant, test, and uncertainty reserve",
     "assumptions": ["labeled assumption or unknown"],
     "requiredCanaries": ["specific escape, route, power, or return-path proof"],
     "invalidatedBy": ["outline", "package", "interface", "process"]
@@ -259,20 +325,58 @@ tree. A minimal record has this shape; replace every example value and source:
     }
   ],
   "layers": [
-    {"name": "Top Layer", "role": "primary-signal", "reference": "Bottom Layer:GND"},
-    {"name": "Bottom Layer", "role": "reference-and-limited-signal", "netAllowList": []}
+    {
+      "name": "Top Layer",
+      "role": "primary-signal",
+      "references": [
+        {
+          "layer": "Bottom Layer",
+          "region": "GND",
+          "continuityEvidence": "candidate-specific return-path canary"
+        }
+      ]
+    },
+    {"name": "Bottom Layer", "role": "continuous-reference"}
   ],
   "routingGeometry": {
     "allowedAnglesDeg": [0, 45, 90, 135],
-    "hardRightAngleJunctions": "PROHIBITED_EXCEPT_PAD_OR_VIA"
+    "hardRightAngleJunctions": "PROHIBITED_EXCEPT_PAD_OR_VIA",
+    "standardVia": {
+      "outerDiameterMm": null,
+      "holeDiameterMm": null,
+      "viaToPadCopperClearanceMm": null,
+      "clearanceMeasurement": "COPPER_EDGE_TO_COPPER_EDGE",
+      "ruleSource": "selected fabricator capability and project rule revision"
+    }
   },
   "assembly": {
     "silkscreenToMaskOrPadMm": 0.15,
     "silkscreenRuleSource": "fabricator capability URL and revision/date",
     "bodyToOwnPadPolicy": "EXACT_LAND_PATTERN_AND_FILLET_REVIEW",
     "componentSpacingSource": "assembler package-pair table and revision/date",
-    "courtyardSource": "verified footprint or documented constructed courtyard"
+    "courtyardSource": "verified land pattern plus documented constructed courtyard",
+    "ownPadCourtyardPolicy": "ALL_LIVE_PAD_COPPER_WITHIN_SOURCED_COURTYARD",
+    "foreignPadOverlapPolicy": "CHECK_ALL_FOREIGN_PADS_AND_COURTYARDS",
+    "foreignPadCopperClearanceMm": null,
+    "foreignPadCopperClearanceSource": "fabricator copper-spacing rule and revision/date"
   },
+  "assemblyEnvelopes": [
+    {
+      "designator": "U1",
+      "source": "exact land pattern plus assembler spacing rule and revisions",
+      "courtyard": {
+        "type": "RECT",
+        "widthMil": null,
+        "heightMil": null,
+        "coordinates": "COMPONENT_LOCAL",
+        "bottomSideTransform": null
+      },
+      "oppositeSideCourtyard": null,
+      "padstackProjectionEvidence": null
+    }
+  ],
+  "criticalPlacementZones": [],
+  "specialViaConstructions": [],
   "humanInterfaces": [
     {
       "reference": "SW1",
@@ -281,6 +385,20 @@ tree. A minimal record has this shape; replace every example value and source:
       "accessEnvelopeSource": "part datasheet + enclosure CAD + operator/tool requirement"
     }
   ],
+  "humanInterfaceGroups": [],
+  "externalInterfaces": [],
+  "bomNormalizationPolicy": {
+    "passives": {"preferredFootprintsByPrefix": {}, "exceptions": []},
+    "connectors": {
+      "requireAllJDesignators": true,
+      "preferredManufacturerSeries": [],
+      "exceptions": []
+    }
+  },
+  "placementClosure": {
+    "requiredBeforeRouting": true,
+    "requiredStatus": "PLACEMENT_CLEAR_FOR_ROUTING"
+  },
   "interfaces": [
     {"name": "USB2", "constraintRecord": "high-speed-constraints.json"}
   ]
@@ -311,15 +429,22 @@ Run the deterministic consistency check before ordinary placement and after
 every invalidating change:
 
 ```bash
+python3 scripts/easyeda_stackup_decision_lint.py \
+  --record path/to/stackup-candidates.json \
+  --output path/to/evidence/audits/stackup-decision-consistency.json
+
 python3 scripts/easyeda_constraint_lint.py \
   --record path/to/layout-constraints.json \
   --output path/to/evidence/audits/constraint-consistency.json
 ```
 
-The checker verifies child-state/disposition mappings, evidence-path existence,
-specialized-gate applicability, conflict closure, and the derived aggregate
-state, and fingerprints the exact input record into its report. Exit code 0
-means only `CLEARED_FOR_PLACEMENT`; it never authorizes
+The stackup checker verifies the candidate comparison, layer/reference roles,
+candidate-specific floorplan and canary evidence, and minimum-feasible
+selection. The aggregate checker reloads and semantically revalidates the
+candidate artifact, then verifies the stored report fingerprint, exact demand-
+partition copy, selected layer-table binding, child-state/disposition mappings,
+evidence paths, specialized-gate applicability, conflict closure, and the
+derived aggregate state. Exit code 0 means only `CLEARED_FOR_PLACEMENT`; it never authorizes
 fabrication. Antenna performance may remain
 `UNVERIFIED_PENDING_PROTOTYPE_TEST` without blocking geometric placement, but
 the report preserves it as missing release evidence. The output path is
@@ -373,10 +498,25 @@ one clearance between a component and its own pads: many valid packages
 intentionally overlap terminal/body geometry. Use the exact orderable part's
 land pattern and the assembler's current package-pair spacing table.
 
+Bind every live pad by designator and parent component primitive ID. For each
+through-hole/multilayer pad, record a sourced `MAXIMUM_COPPER_PROJECTION`
+padstack entry and the opposite-side courtyard. A bottom-side
+`COMPONENT_LOCAL` envelope must set `bottomSideTransform` to
+`MIRROR_LOCAL_X_THEN_ROTATE`; use no transform for absolute `BOARD` geometry.
+Every `POLYGON` courtyard or critical zone must be simple and non-zero-area,
+without repeated zero-length edges or non-adjacent edge intersections.
+
 Record the selected fabricator's current silkscreen-to-pad or solder-mask rule.
 For JLCPCB, 0.15 mm is the current planning floor, but the order-time capability
 and final Gerber remain authoritative. Require 2D/3D body/courtyard review and
 Gerber legend/mask review; API metadata or clean DRC alone cannot close them.
+
+## Placement closure
+
+`CLEARED_FOR_PLACEMENT` closes only the planning gate. After actual placement,
+run the exact-revision geometry, interface, and BOM gate in
+[placement-closure.md](placement-closure.md). Do not begin production routing
+until its saved/reopened report states `PLACEMENT_CLEAR_FOR_ROUTING`.
 
 ## Human-operated controls
 

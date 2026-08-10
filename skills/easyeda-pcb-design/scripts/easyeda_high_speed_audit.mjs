@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import {
   DECISION_VALUES,
   EXIT,
+  analyzePourConnectivity,
   applyDecisionExitCode,
   constraintFingerprint,
   designFingerprint,
@@ -23,6 +24,7 @@ import {
   existingArtifactPath,
   fetchJson,
   findBridge,
+  freeCopperPrimitiveIds,
   highRiskInterfaceReasons,
   nonemptyString,
   notAFabricationReleaseMessage,
@@ -30,6 +32,7 @@ import {
   resolveManufacturingReview,
   resolveSafeOutputPath,
   resolveWindow,
+  validateNetlistCompareExceptionArtifact,
 } from "./audit_common.mjs";
 
 const DECISIONS = DECISION_VALUES;
@@ -280,27 +283,13 @@ function normalizeNativeNetlistCacheException(value) {
       }`,
     );
   }
-  if (
-    artifact?.kind !== "easyeda-manufacturing-netlist-comparison" ||
-    artifact?.comparison?.match !== true ||
-    artifact?.fabricationRelease !== false ||
-    !nonemptyString(artifact?.pcb?.uuid)
-  ) {
-    throw new Error(
-      "nativeNetlistCacheException artifact must prove manufacturing comparison.match=true, identify the PCB UUID, and keep fabricationRelease=false",
-    );
-  }
-  return {
-    reason: value.reason.trim(),
+  const validated = validateNetlistCompareExceptionArtifact(
+    artifact,
     artifactPath,
-    artifact: {
-      kind: artifact.kind,
-      decision: artifact.decision || null,
-      manufacturingDecision: artifact.manufacturingDecision || null,
-      pcbUuid: artifact.pcb.uuid,
-      schematicUuid: artifact.schematic?.uuid || null,
-      comparisonMatch: true,
-    },
+  );
+  return {
+    ...validated,
+    reason: `${value.reason.trim()} — ${validated.reason}`,
   };
 }
 
@@ -619,6 +608,14 @@ for (const pour of pours) {
     hasCopper: Boolean(copper),
     fillCount: fills.length,
     solidFillCount: solidFills.length,
+    solidFillRecords: solidFills.map((fill) => ({
+      id: fill.id || fill.primitiveId || "",
+      lineWidth: fill.lineWidth,
+      path:
+        fill.path && typeof fill.path.getSourceStrictComplex === "function"
+          ? fill.path.getSourceStrictComplex()
+          : fill.path || null,
+    })),
     solidFillIds: solidFills
       .map((fill) => fill.id || fill.primitiveId)
       .filter(Boolean),
@@ -704,12 +701,15 @@ function drcLeafErrors(value, output = []) {
   return output;
 }
 
-function drcSummaryWithExceptions(drc, options, documentInfo) {
+function drcSummaryWithExceptions(drc, options, documentInfo, projectInfo) {
   const summary = drcSummary(drc);
   const exception = options.nativeNetlistCacheException;
   if (!exception || summary.passed) return summary;
   const leaves = drcLeafErrors(drc);
   const pcbMatches = exception.artifact.pcbUuid === documentInfo?.uuid;
+  const projectMatches =
+    !exception.artifact.projectUuid ||
+    exception.artifact.projectUuid === projectInfo?.uuid;
   const solelyNativeCache =
     leaves.length > 0 &&
     leaves.every(
@@ -717,11 +717,13 @@ function drcSummaryWithExceptions(drc, options, documentInfo) {
         item.errorType === "Netlist Error" &&
         item.ruleName === "Import Changes",
     );
-  if (!pcbMatches || !solelyNativeCache) {
+  if (!pcbMatches || !projectMatches || !solelyNativeCache) {
     return {
       ...summary,
       exceptionRejected: !pcbMatches
         ? `manufacturing-netlist artifact PCB ${exception.artifact.pcbUuid} does not match active PCB ${documentInfo?.uuid || "<unknown>"}`
+        : !projectMatches
+          ? `manufacturing-netlist artifact project ${exception.artifact.projectUuid} does not match active project ${projectInfo?.uuid || "<unknown>"}`
         : "DRC contains errors other than the documented native Import Changes cache mismatch",
     };
   }
@@ -730,6 +732,7 @@ function drcSummaryWithExceptions(drc, options, documentInfo) {
     passedWithExceptions: true,
     errorCount: 0,
     rawErrorCount: leaves.length,
+    rawErrors: summary.errors,
     errors: [],
     exceptions: leaves.map((item) => ({
       errorType: item.errorType,
@@ -1492,43 +1495,18 @@ function analyze(raw, options, source) {
       !signalVias.some((via) => via.primitiveId === exception.signalViaId),
   );
 
-  const freeCopperIds = new Set(
-    drcLeafErrors(raw.drc)
-      .filter(
-        (item) =>
-          item.isFree === true ||
-          item.explanation?.param?.type === "ConnectError" ||
-          item.explanation?.errData?.errorType === "No Connection",
-      )
-      .flatMap((item) => item.objs || [item.explanation?.errData?.obj1])
-      .filter(Boolean),
+  const freeCopperIds = freeCopperPrimitiveIds(drcLeafErrors(raw.drc));
+  const pours = (raw.pours || []).map((pour) =>
+    analyzePourConnectivity(pour, freeCopperIds),
   );
-  const pours = (raw.pours || []).map((pour) => {
-    const solidFillIds = Array.isArray(pour.solidFillIds)
-      ? pour.solidFillIds.filter(nonemptyString)
-      : [];
-    const freeSolidFillIds = solidFillIds.filter((id) => freeCopperIds.has(id));
-    const fillConnectivityProven =
-      solidFillIds.length > 0 && freeSolidFillIds.length === 0;
-    const passed = Boolean(
-      pour.hasCopper &&
-        pour.fillCount > 0 &&
-        pour.solidFillCount > 0 &&
-        (!pour.preserveSilos || fillConnectivityProven),
-    );
-    return {
-      ...pour,
-      solidFillIds,
-      freeSolidFillIds,
-      preserveSilosStateIgnored: Boolean(
-        passed && pour.preserveSilos && fillConnectivityProven,
-      ),
-      passed,
-    };
-  });
   const groundPours = pours.filter((pour) => pour.net === options.groundNet);
   const groundPourPresent = groundPours.some((pour) => pour.passed);
-  const drc = drcSummaryWithExceptions(raw.drc, options, raw.document);
+  const drc = drcSummaryWithExceptions(
+    raw.drc,
+    options,
+    raw.document,
+    raw.project,
+  );
   const incompleteConstraints = constraintCompleteness(options, signalVias.length);
 
   const failures = [];
@@ -1583,6 +1561,14 @@ function analyze(raw, options, source) {
   }
   if (options.requireGroundPour && !groundPourPresent) {
     failures.push(`no valid filled ${options.groundNet} pour was found`);
+  }
+  const freeCopperPours = pours.filter(
+    (pour) => pour.freeSolidFillIds.length > 0,
+  );
+  if (freeCopperPours.length) {
+    failures.push(
+      `${freeCopperPours.length} copper pour(s) contain DRC-identified free-copper fill regions`,
+    );
   }
 
   const warnings = [];
@@ -1655,7 +1641,7 @@ function analyze(raw, options, source) {
   const constraintsFingerprint = constraintFingerprint(options.constraintRecord);
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     kind: "high-speed",
     evidence: "RULE_CHECK",
     decision,

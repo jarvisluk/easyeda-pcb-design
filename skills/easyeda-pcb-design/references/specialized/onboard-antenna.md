@@ -35,9 +35,11 @@ silently scale, mirror, rotate, or reshape a released antenna.
 
 Treat the antenna geometry inside the module as fixed. The host-board task is
 to preserve the module vendor's placement, board-edge, ground, and keepout
-environment. Prefer the approved module orientation with the antenna extending
-beyond the host-board edge. If that is impossible, use only a vendor-approved
-alternative placement or board cutout.
+environment. Among vendor-approved arrangements, prefer keeping the complete
+module envelope within the host board's external dimensions and reproducing
+the approved physical board cutout beneath the antenna region. Use an overhang
+only when the exact module guide requires it or no approved in-outline cutout
+arrangement can close the RF, mechanical, and assembly gates.
 
 Do not copy a clearance number from a different module family. Transfer the
 exact antenna keepout polygon and dimensions from the selected module revision.
@@ -51,13 +53,16 @@ Apply this sequence unless the exact module guide requires a different one:
 
 1. Rotate the module so its antenna end faces outward, toward the nearest
    product/PCB edge rather than toward the board interior.
-2. Prefer placing the antenna section beyond the host-board outline, with the
-   antenna feed/ground boundary at the host-board edge. Keep the module body and
-   ground pads supported as required by the land pattern.
-3. If the antenna cannot overhang, put the antenna end at the board edge and
-   reproduce the vendor's alternative keepout or board cutout exactly. Do not
-   place the module in the board center merely because a local void can be
-   drawn around it.
+2. Prefer keeping the entire module, including its antenna, within the board's
+   external bounding dimensions. Put the antenna end at the board edge and
+   reproduce the vendor-approved physical board cutout beneath the antenna
+   region exactly, while keeping the module body and ground pads supported as
+   required by the land pattern.
+3. Use antenna overhang only when the exact module guide requires it or the
+   approved in-outline cutout cannot satisfy RF, support, assembly, enclosure,
+   or fabrication constraints. Record the resulting increase in the product's
+   maximum PCB/module envelope before accepting the floorplan. Do not place the
+   module in the board center merely because a local void can be drawn around it.
 4. Distinguish **all-layer copper clearance** from a **physical PCB cutout**:
    copper clearance leaves the laminate in place but excludes pours, tracks,
    pads, and vias on every specified copper layer; a physical cutout removes
@@ -156,6 +161,9 @@ Record these items before placement:
   topology, and ground/counterpoise dimensions;
 - separate 2D keepout polygons for copper, tracks/vias, components, and board
   mechanics, including the layers to which each polygon applies;
+- selected in-outline cutout or overhang arrangement, the board's external
+  bounding dimensions, exact cutout geometry when applicable, and the source
+  that approves the construction;
 - enclosure, display, battery, shield, cable, connector, screw, heatsink, and
   expected hand/body proximity;
 - simulation, VNA, OTA/throughput/range, and regulatory verification plans.
@@ -169,7 +177,7 @@ When this antenna layer feeds the baseline placement-feasibility gate, use two
 separate conclusions:
 
 1. Set antenna planning to `CLEARED_FOR_PLACEMENT` only when the exact
-   vendor-approved placement, direction mapping, board-edge/overhang or cutout,
+   vendor-approved placement, direction mapping, in-outline cutout or overhang,
    keepouts, ground/counterpoise, and product clearance all fit. Only then may
    the overall placement be **FEASIBLE — FOLLOW**.
 2. Set it to `BLOCKED` when the requested board outline,
@@ -178,6 +186,24 @@ separate conclusions:
    propose a board, module, orientation, or enclosure revision.
 3. Keep it **UNRESOLVED** when the exact module guide, footprint mapping,
    enclosure, or nearby-object geometry is missing.
+
+For a board explicitly scoped as a bare-board prototype with no supplied
+enclosure or nearby product geometry, distinguish missing product evidence from
+the PCB integration gate: exact module/orientation/edge/keepout/counterpoise
+geometry may be `CLEARED_FOR_PLACEMENT`, while `productGeometryStatus` remains
+`NOT_SUPPLIED` and RF performance remains
+`UNVERIFIED_PENDING_PROTOTYPE_TEST`. This exception is invalid if an enclosure,
+battery, display, cable, fastener, shield, or other nearby object is specified or
+known; then its geometry is a placement input and absence is `UNRESOLVED`.
+
+Preserve a machine-readable antenna-integration record containing the exact
+project/PCB revision, module MPN and source revision, footprint layer/rotation/
+mirror, numbered-pad direction evidence, transformed antenna polygon/vector,
+selected board-edge segment and outward normal, every layer's copper/route/via
+keepout result, component keepout result, product scope/status above, planning
+status, performance status, invalidation triggers, and evidence paths. Bind that
+artifact through `placementFeasibility.specializedGates.onboardAntenna.constraintRecord`.
+Free-form screenshots or a visible courtyard cannot close these fields.
 
 An integration-feasible floorplan does not prove that the antenna will work
 normally in the final product. Report RF performance as `UNVERIFIED` until the
@@ -193,9 +219,10 @@ or regulatory claim.
    ground/counterpoise as one candidate. Freeze them together only when both
    antenna integration and the aggregate placement gate clear.
 2. Put the antenna at the intended product boundary and orientation. For an
-   integrated module, face the antenna end outward and use the module vendor's
-   recommended edge or overhang placement. Do not put the module in the board
-   center and improvise a slot.
+   integrated module, face the antenna end outward and prefer the vendor-approved
+   in-outline physical cutout that keeps the complete module within the board's
+   external dimensions. Use overhang only under the exception above. Do not put
+   the module in the board center or improvise a slot.
 3. Implement the exact vendor/reference keepout on every specified copper
    layer. Unless the exact reference explicitly permits an object, keep copper
    pours, tracks, vias, pads, components, test points, fiducials, shields,

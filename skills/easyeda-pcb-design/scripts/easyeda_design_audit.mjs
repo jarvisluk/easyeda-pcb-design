@@ -9,17 +9,20 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   DECISION_VALUES,
   EXIT,
+  analyzePourConnectivity,
   applyDecisionExitCode,
   constraintFingerprint,
   crystalNetHints,
   designFingerprint,
   fetchJson,
   findBridge,
+  freeCopperPrimitiveIds,
   highSpeedDiscovery,
   nonemptyString,
   notAFabricationReleaseMessage,
@@ -28,7 +31,9 @@ import {
   resolveManufacturingReview,
   resolveSafeOutputPath,
   resolveWindow,
+  validateNetlistCompareExceptionArtifact,
 } from "./audit_common.mjs";
+import { validateComponentEvidenceRecord } from "./component_selection_evidence.mjs";
 
 const DECISIONS = DECISION_VALUES;
 // The bridge execution sandbox does not expose enum globals. These values are
@@ -52,6 +57,10 @@ Options:
                                       (repeatable; requires --exception-note)
   --exception-note TEXT             Required with any --allow-* flag
   --crystal-audit-report FILE       Clear crystal/clock net hints using its audit JSON
+  --component-evidence FILE         Revision-bound component-selection evidence JSON
+  --placement-audit-report FILE    Exact-revision PLACEMENT_CLEAR_FOR_ROUTING report
+  --netlist-compare-report FILE     Strict schematic/PCB comparison report; may clear
+                                      only a verified native Import Changes cache error
   --high-speed-constraints FILE     Revision-controlled HS interface constraints
   --high-speed-audit-report FILE    Clear HS-net hints using a prior HS audit JSON
   --manufacturing-reviewed          Mark Gerber/BOM/PnP reviewed (needs human attest)
@@ -88,6 +97,12 @@ function parseArgs(argv) {
     allowRoutingCycleNets: [],
     exceptionNote: undefined,
     crystalAuditReport: undefined,
+    componentEvidence: undefined,
+    componentEvidenceRecord: undefined,
+    componentEvidenceBaseDir: undefined,
+    placementAuditReport: undefined,
+    placementAuditRecord: undefined,
+    netlistCompareReport: undefined,
     highSpeedConstraints: undefined,
     highSpeedConstraintRecord: undefined,
     highSpeedAuditReport: undefined,
@@ -125,6 +140,15 @@ function parseArgs(argv) {
     } else if (option === "--exception-note") options.exceptionNote = next();
     else if (option === "--crystal-audit-report") {
       options.crystalAuditReport = next();
+    }
+    else if (option === "--component-evidence") {
+      options.componentEvidence = next();
+    }
+    else if (option === "--placement-audit-report") {
+      options.placementAuditReport = next();
+    }
+    else if (option === "--netlist-compare-report") {
+      options.netlistCompareReport = next();
     }
     else if (option === "--high-speed-constraints") {
       options.highSpeedConstraints = next();
@@ -208,33 +232,211 @@ async function loadHighSpeedConstraintRecord(options) {
         }`,
       );
     }
-    if (
-      artifact?.kind !== "easyeda-manufacturing-netlist-comparison" ||
-      artifact?.comparison?.match !== true ||
-      artifact?.fabricationRelease !== false ||
-      !nonemptyString(artifact?.pcb?.uuid)
-    ) {
-      throw new Error(
-        "nativeNetlistCacheException artifact must prove manufacturing comparison.match=true, identify the PCB UUID, and keep fabricationRelease=false",
-      );
-    }
+    const validated = validateNetlistCompareExceptionArtifact(
+      artifact,
+      path.resolve(artifactPath),
+    );
     nativeNetlistCacheException = {
-      reason: value.reason.trim(),
-      artifactPath,
-      artifact: {
-        kind: artifact.kind,
-        decision: artifact.decision || null,
-        manufacturingDecision: artifact.manufacturingDecision || null,
-        pcbUuid: artifact.pcb.uuid,
-        schematicUuid: artifact.schematic?.uuid || null,
-        comparisonMatch: true,
-      },
+      ...validated,
+      reason: `${value.reason.trim()} — ${validated.reason}`,
     };
   }
   return {
     ...options,
     highSpeedConstraintRecord: record,
     nativeNetlistCacheException,
+  };
+}
+
+async function loadNetlistCompareReport(options) {
+  if (!options.netlistCompareReport) return options;
+  if (options.nativeNetlistCacheException) {
+    throw new Error(
+      "do not combine --netlist-compare-report with legacy nativeNetlistCacheException metadata",
+    );
+  }
+  const artifactPath = path.resolve(options.netlistCompareReport);
+  let artifact;
+  try {
+    artifact = JSON.parse(await readFile(artifactPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `unable to read netlist comparison report ${options.netlistCompareReport}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return {
+    ...options,
+    nativeNetlistCacheException: validateNetlistCompareExceptionArtifact(
+      artifact,
+      artifactPath,
+    ),
+  };
+}
+
+async function loadComponentEvidenceRecord(options) {
+  if (!options.componentEvidence) return options;
+  const recordPath = path.resolve(options.componentEvidence);
+  let record;
+  try {
+    record = JSON.parse(await readFile(recordPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `unable to read component-selection evidence ${options.componentEvidence}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("component-selection evidence must be a JSON object");
+  }
+  return {
+    ...options,
+    componentEvidenceRecord: record,
+    componentEvidenceBaseDir: path.dirname(recordPath),
+  };
+}
+
+async function loadPlacementAuditReport(options) {
+  if (!options.placementAuditReport) return options;
+  const reportPath = path.resolve(options.placementAuditReport);
+  let report;
+  try {
+    report = JSON.parse(await readFile(reportPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `unable to read placement audit ${options.placementAuditReport}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error("placement audit report must be a JSON object");
+  }
+  return { ...options, placementAuditRecord: report, placementAuditReport: reportPath };
+}
+
+function placementAuditClearance(report, expected = {}) {
+  if (!report) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "no exact-revision placement audit report supplied",
+    };
+  }
+  if (report.kind !== "easyeda-placement-audit" || report.fabricationRelease !== false) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "placement report kind or fabrication-release boundary is invalid",
+    };
+  }
+  const placement = report.checks?.componentPlacement;
+  const arrayContracts = [
+    [report.checks?.viaPad, "violations", "blocking"],
+    [report.checks?.viaPad, "unsupportedPads", "unresolved"],
+    [report.checks?.viaPad, "unsupportedVias", "unresolved"],
+    [placement, "exactConflicts", "blocking"],
+    [placement, "ownPadOutsideCourtyard", "blocking"],
+    [placement, "crossComponentPadConflicts", "blocking"],
+    [placement, "crossComponentPadClearanceViolations", "blocking"],
+    [placement, "padToForeignCourtyardConflicts", "blocking"],
+    [placement, "criticalZoneViolations", "blocking"],
+    [placement, "unsupportedPadOccupancy", "unresolved"],
+    [placement, "unownedPads", "unresolved"],
+    [placement, "componentIdentityConflicts", "unresolved"],
+    [placement, "invalidEnvelopes", "unresolved"],
+    [placement, "missingEnvelopeDesignators", "unresolved"],
+    [placement, "missingOppositeSideCourtyardDesignators", "unresolved"],
+    [placement, "missingPadstackProjectionEvidence", "unresolved"],
+    [placement, "unresolvedBboxCandidates", "unresolved"],
+    [placement, "criticalZoneUnverified", "unresolved"],
+    [report.checks?.humanInterfaces, "violations", "blocking"],
+    [report.checks?.humanInterfaces, "unverified", "unresolved"],
+    [report.checks?.interfacesAndBom, "failures", "blocking"],
+    [report.checks?.interfacesAndBom, "unverified", "unresolved"],
+  ];
+  if (
+    report.schemaVersion !== 2 ||
+    !placement ||
+    arrayContracts.some(([owner, field]) => !owner || !Array.isArray(owner[field])) ||
+    !Array.isArray(report.failures) ||
+    !Array.isArray(report.unverified) ||
+    !Array.isArray(report.stale)
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "placement report predates or omits complete schema 2 gate evidence",
+    };
+  }
+  if (
+    report.design?.project?.uuid !== expected.projectUuid ||
+    report.design?.document?.uuid !== expected.documentUuid ||
+    report.design?.fingerprint !== expected.designFingerprint
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "placement report project/document/fingerprint is missing or stale",
+      status: report.status || null,
+    };
+  }
+  const blockingFindings = arrayContracts
+    .filter(([, , classification]) => classification === "blocking")
+    .flatMap(([owner, field]) => owner[field]);
+  if (blockingFindings.length || report.failures.length) {
+    return {
+      cleared: false,
+      blocking: true,
+      reason: "placement report contains blocking placement findings",
+      failures: blockingFindings.length ? blockingFindings : report.failures,
+    };
+  }
+  const constraintFingerprint = report.constraints?.recordFingerprint;
+  if (
+    report.constraints?.revision !== expected.designFingerprint ||
+    report.constraints?.consistencyGateStatus !== "CLEARED_FOR_PLACEMENT" ||
+    typeof constraintFingerprint !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/i.test(constraintFingerprint)
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "placement report constraint revision, fingerprint, or consistency gate is stale or invalid",
+    };
+  }
+  const unresolvedFindings = arrayContracts
+    .filter(([, , classification]) => classification === "unresolved")
+    .flatMap(([owner, field]) => owner[field]);
+  if (
+    unresolvedFindings.length ||
+    report.unverified.length ||
+    report.stale.length
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "placement report contains unresolved or stale placement evidence",
+    };
+  }
+  if (report.status === "PLACEMENT_CLEAR_FOR_ROUTING") {
+    return { cleared: true, blocking: false, reason: "exact-revision placement gate cleared" };
+  }
+  if (report.status === "BLOCKED") {
+    return {
+      cleared: false,
+      blocking: true,
+      reason: "exact-revision placement audit contains blocking findings",
+      failures: report.failures || [],
+    };
+  }
+  return {
+    cleared: false,
+    blocking: false,
+    reason: `placement audit status is ${report.status || "missing"}`,
+    status: report.status || null,
   };
 }
 
@@ -265,15 +467,32 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
   const schematicPrimitives = await eda.sch_PrimitiveComponent.getAll();
   // Net ports and net flags share the component primitive API, but they are
   // connectivity annotations rather than BOM/PCB components.
-  const components = schematicPrimitives.filter((component) => {
+  const isPart = (component) => {
     const componentType = value(
       component,
       "getState_ComponentType",
       "componentType",
     );
     return componentType === undefined || componentType === "part";
-  });
+  };
+  const components = schematicPrimitives.filter(isPart);
+  const schematicAnnotations = schematicPrimitives
+    .filter((component) => !isPart(component))
+    .map((component) => ({
+      primitiveId: value(component, "getState_PrimitiveId", "primitiveId"),
+      componentType:
+        value(component, "getState_ComponentType", "componentType") || "",
+      net: value(component, "getState_Net", "net") || "",
+      x: value(component, "getState_X", "x"),
+      y: value(component, "getState_Y", "y"),
+      rotation: value(component, "getState_Rotation", "rotation"),
+    }));
   const wires = await eda.sch_PrimitiveWire.getAll();
+  const schematicWires = wires.map((wire) => ({
+    primitiveId: value(wire, "getState_PrimitiveId", "primitiveId"),
+    net: value(wire, "getState_Net", "net") || "",
+    line: value(wire, "getState_Line", "line") || null,
+  }));
   const drc = await eda.sch_Drc.check(true, false, true);
   return {
     ...base,
@@ -281,16 +500,30 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
     components: components.map((component) => ({
       primitiveId: value(component, "getState_PrimitiveId", "primitiveId"),
       designator: value(component, "getState_Designator", "designator") || "",
+      uniqueId: value(component, "getState_UniqueId", "uniqueId") || "",
       name: value(component, "getState_Name", "name") || "",
+      manufacturer:
+        value(component, "getState_Manufacturer", "manufacturer") || "",
+      manufacturerPartNumber:
+        value(component, "getState_ManufacturerId", "manufacturerId") || "",
+      supplier: value(component, "getState_Supplier", "supplier") || "",
+      supplierPartNumber:
+        value(component, "getState_SupplierId", "supplierId") || "",
       addIntoPcb: value(component, "getState_AddIntoPcb", "addIntoPcb"),
       footprint: value(component, "getState_Footprint", "footprint") || null,
     })),
     wireCount: wires.length,
+    schematicAnnotations,
+    schematicWires,
     drc,
   };
 }
 
 if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
+  const drcRuleBefore = {
+    name: await eda.pcb_Drc.getCurrentRuleConfigurationName(),
+    configuration: await eda.pcb_Drc.getCurrentRuleConfiguration(),
+  };
   const layers = await eda.pcb_Layer.getAllLayers();
   const netNames = await eda.pcb_Net.getAllNetsName();
   const components = await eda.pcb_PrimitiveComponent.getAll();
@@ -368,11 +601,18 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       viaType: value(via, "getState_ViaType", "viaType"),
       blindViaRule:
         value(via, "getState_DesignRuleBlindViaName", "designRuleBlindViaName") || null,
+      solderMaskExpansion:
+        value(via, "getState_SolderMaskExpansion", "solderMaskExpansion") || null,
     }))
     .filter((via) => Number.isFinite(via.x) && Number.isFinite(via.y));
   const pourData = [];
   for (const pour of pours) {
     const copper = await pour.getCopperRegion();
+    const complexPolygon = value(
+      pour,
+      "getState_ComplexPolygon",
+      "complexPolygon",
+    );
     const fills = copper ? copper.getState_PourFills() : [];
     const solidFills = fills.filter((fill) => fill && fill.fill === true);
     pourData.push({
@@ -380,15 +620,31 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       name: value(pour, "getState_PourName", "pourName") || "",
       net: value(pour, "getState_Net", "net") || "",
       layer: value(pour, "getState_Layer", "layer"),
+      lineWidth: value(pour, "getState_LineWidth", "lineWidth"),
+      fillMethod: value(pour, "getState_PourFillMethod", "pourFillMethod"),
+      priority: value(pour, "getState_PourPriority", "pourPriority"),
+      complexPolygon:
+        complexPolygon &&
+        typeof complexPolygon.getSourceStrictComplex === "function"
+          ? complexPolygon.getSourceStrictComplex()
+          : complexPolygon || null,
       preserveSilos: Boolean(
         value(pour, "getState_PreserveSilos", "preserveSilos")
       ),
-      hasCopper: Boolean(copper),
-      fillCount: fills.length,
-      solidFillCount: solidFills.length,
-      solidFillIds: solidFills
-        .map((fill) => fill.id || fill.primitiveId)
-        .filter(Boolean),
+    hasCopper: Boolean(copper),
+    fillCount: fills.length,
+    solidFillCount: solidFills.length,
+    solidFillRecords: solidFills.map((fill) => ({
+      id: fill.id || fill.primitiveId || "",
+      lineWidth: fill.lineWidth,
+      path:
+        fill.path && typeof fill.path.getSourceStrictComplex === "function"
+          ? fill.path.getSourceStrictComplex()
+          : fill.path || null,
+    })),
+    solidFillIds: solidFills
+      .map((fill) => fill.id || fill.primitiveId)
+      .filter(Boolean),
     });
   }
   const componentData = [];
@@ -396,12 +652,23 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
   for (const component of components) {
     const primitiveId = value(component, "getState_PrimitiveId", "primitiveId");
     const designator = value(component, "getState_Designator", "designator") || "";
+    const bbox = await eda.pcb_Primitive.getPrimitivesBBox([component]);
     componentData.push({
       primitiveId,
       designator,
+      uniqueId: value(component, "getState_UniqueId", "uniqueId") || "",
+      name: value(component, "getState_Name", "name") || "",
+      manufacturer:
+        value(component, "getState_Manufacturer", "manufacturer") || "",
+      manufacturerPartNumber:
+        value(component, "getState_ManufacturerId", "manufacturerId") || "",
+      footprint: value(component, "getState_Footprint", "footprint") || null,
+      model3D: value(component, "getState_Model3D", "model3D") || null,
       layer: value(component, "getState_Layer", "layer"),
       x: value(component, "getState_X", "x"),
       y: value(component, "getState_Y", "y"),
+      rotation: value(component, "getState_Rotation", "rotation") || 0,
+      bbox: bbox || null,
     });
     const pins = typeof component.getAllPins === "function"
       ? await component.getAllPins()
@@ -418,10 +685,46 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
         y: value(pad, "getState_Y", "y"),
         rotation: value(pad, "getState_Rotation", "rotation") || 0,
         pad: value(pad, "getState_Pad", "pad") || null,
+        specialPad: value(pad, "getState_SpecialPad", "specialPad") || null,
+        hole: value(pad, "getState_Hole", "hole") || null,
+        padType: value(pad, "getState_PadType", "padType"),
+        solderMaskAndPasteMaskExpansion:
+          value(
+            pad,
+            "getState_SolderMaskAndPasteMaskExpansion",
+            "solderMaskAndPasteMaskExpansion"
+          ) || null,
       });
     }
   }
-  const drc = await eda.pcb_Drc.check(true, false, true);
+  const drcSamples = [
+    {
+      id: "silent-1",
+      strict: true,
+      userInterface: false,
+      includeVerboseError: true,
+      result: await eda.pcb_Drc.check(true, false, true),
+    },
+    {
+      id: "silent-2",
+      strict: true,
+      userInterface: false,
+      includeVerboseError: true,
+      result: await eda.pcb_Drc.check(true, false, true),
+    },
+    {
+      id: "visible-final",
+      strict: true,
+      userInterface: true,
+      includeVerboseError: true,
+      result: await eda.pcb_Drc.check(true, true, true),
+    },
+  ];
+  const drcRuleAfter = {
+    name: await eda.pcb_Drc.getCurrentRuleConfigurationName(),
+    configuration: await eda.pcb_Drc.getCurrentRuleConfiguration(),
+  };
+  const drc = drcSamples[drcSamples.length - 1].result;
   return {
     ...base,
     kind: "pcb",
@@ -448,6 +751,12 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       ).values(),
     ],
     drc,
+    drcEvidence: {
+      schemaVersion: 1,
+      ruleBefore: drcRuleBefore,
+      ruleAfter: drcRuleAfter,
+      samples: drcSamples,
+    },
   };
 }
 
@@ -498,16 +807,20 @@ function summarizeDrc(drc) {
     const errors = drc.filter(
       (item) => String(item?.type || "").toLowerCase() !== "warn",
     );
+    const errorLeaves = drcLeafErrors(errors);
+    const warningLeaves = drcLeafErrors(warningGroups);
     const warningCount = warningGroups.reduce(
       (total, item) => total + (Number.isFinite(item?.count) ? item.count : 1),
       0,
     );
     return {
       passed: errors.length === 0,
-      errorCount: errors.length,
+      errorCount: errorLeaves.length || errors.length,
       errors,
-      warningCount,
+      errorLeaves,
+      warningCount: warningLeaves.length || warningCount,
       warnings: warningGroups,
+      warningLeaves,
     };
   }
   return {
@@ -518,23 +831,205 @@ function summarizeDrc(drc) {
   };
 }
 
-function summarizePcbDrc(drc, options, documentInfo) {
+function stripVolatileDrcFields(value) {
+  if (Array.isArray(value)) return value.map(stripVolatileDrcFields);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== "globalIndex")
+      .map(([key, item]) => [key, stripVolatileDrcFields(item)]),
+  );
+}
+
+function canonicalDrcLeaves(drc) {
+  return drcLeafErrors(drc)
+    .map((item) => ({
+      errorType: item.errorType || "",
+      errorObjType: item.errorObjType || "",
+      ruleName: item.ruleName || "",
+      objs: Array.isArray(item.objs)
+        ? [...item.objs].filter(nonemptyString).sort()
+        : nonemptyString(item.objs)
+          ? [item.objs]
+          : [],
+      isFree: item.isFree === true,
+      explanation: stripVolatileDrcFields(item.explanation || null),
+    }))
+    .sort((left, right) =>
+      constraintFingerprint(left).localeCompare(constraintFingerprint(right)),
+    );
+}
+
+function drcRuleBinding(evidence = {}) {
+  const before = evidence.ruleBefore || {};
+  const after = evidence.ruleAfter || {};
+  const beforeConfigurationValid = Boolean(
+    before.configuration &&
+      typeof before.configuration === "object" &&
+      !Array.isArray(before.configuration),
+  );
+  const afterConfigurationValid = Boolean(
+    after.configuration &&
+      typeof after.configuration === "object" &&
+      !Array.isArray(after.configuration),
+  );
+  const beforeFingerprint = beforeConfigurationValid
+    ? constraintFingerprint(before.configuration)
+    : null;
+  const afterFingerprint = afterConfigurationValid
+    ? constraintFingerprint(after.configuration)
+    : null;
+  const captured = Boolean(
+    nonemptyString(before.name) &&
+      nonemptyString(after.name) &&
+      beforeFingerprint &&
+      afterFingerprint,
+  );
+  const stable = Boolean(
+    captured &&
+      before.name === after.name &&
+      beforeFingerprint === afterFingerprint,
+  );
+  return {
+    captured,
+    stable,
+    name: stable ? before.name : null,
+    fingerprint: stable ? beforeFingerprint : null,
+    before: {
+      name: before.name || null,
+      fingerprint: beforeFingerprint,
+      configuration: beforeConfigurationValid ? before.configuration : null,
+    },
+    after: {
+      name: after.name || null,
+      fingerprint: afterFingerprint,
+      configuration: afterConfigurationValid ? after.configuration : null,
+    },
+    reason: !captured
+      ? "current DRC rule configuration was not captured before and after the checks"
+      : stable
+        ? "DRC rule name and full configuration were stable across the audit"
+        : "DRC rule name or full configuration changed during the audit",
+  };
+}
+
+function summarizePcbDrcEvidence(raw, options) {
+  const evidence = raw.drcEvidence || {};
+  const samples = Array.isArray(evidence.samples) ? evidence.samples : [];
+  const expectedSamples = [
+    { id: "silent-1", userInterface: false },
+    { id: "silent-2", userInterface: false },
+    { id: "visible-final", userInterface: true },
+  ];
+  const sampleContractComplete = Boolean(
+    samples.length === expectedSamples.length &&
+      samples.every((sample, index) =>
+        sample?.id === expectedSamples[index].id &&
+        sample.strict === true &&
+        sample.userInterface === expectedSamples[index].userInterface &&
+        sample.includeVerboseError === true &&
+        Array.isArray(sample.result),
+      ),
+  );
+  const sampleReports = samples.map((sample) => {
+    const canonicalLeaves = canonicalDrcLeaves(sample.result);
+    return {
+      id: sample.id || null,
+      strict: sample.strict === true,
+      userInterface: sample.userInterface === true,
+      includeVerboseError: sample.includeVerboseError === true,
+      detailedResult: Array.isArray(sample.result),
+      leafCount: canonicalLeaves.length,
+      leafFingerprint: constraintFingerprint({ leaves: canonicalLeaves }),
+      summary: summarizePcbDrc(
+        sample.result,
+        options,
+        raw.document,
+        raw.project,
+      ),
+      canonicalLeaves,
+    };
+  });
+  const leafFingerprints = sampleReports.map((sample) => sample.leafFingerprint);
+  const repeatable = Boolean(
+    sampleContractComplete &&
+      leafFingerprints.length > 0 &&
+      leafFingerprints.every((fingerprint) => fingerprint === leafFingerprints[0]),
+  );
+  const ruleBinding = drcRuleBinding(evidence);
+  const evidenceVerified = Boolean(
+    sampleContractComplete && repeatable && ruleBinding.stable,
+  );
+  const fallback = summarizePcbDrc(
+    raw.drc,
+    options,
+    raw.document,
+    raw.project,
+  );
+  const finalSummary = sampleReports.at(-1)?.summary || fallback;
+  const nonPassingSamples = sampleReports.filter((sample) => !sample.summary.passed);
+  const observedLeaves = [
+    ...new Map(
+      sampleReports
+        .flatMap((sample) => sample.canonicalLeaves)
+        .map((leaf) => [constraintFingerprint(leaf), leaf]),
+    ).values(),
+  ];
+  const passed = sampleReports.length > 0
+    ? nonPassingSamples.length === 0
+    : fallback.passed;
+  return {
+    ...finalSummary,
+    passed,
+    errorCount: passed ? 0 : observedLeaves.length || finalSummary.errorCount,
+    evidenceVerified,
+    ruleBinding,
+    repeatability: {
+      sampleContractComplete,
+      stableLeafSet: repeatable,
+      expectedSequence: expectedSamples,
+      observedSampleIds: sampleReports.map((sample) => sample.id),
+      leafFingerprints,
+      reason: !sampleContractComplete
+        ? "required two silent and one visible detailed strict DRC samples are missing"
+        : repeatable
+          ? "all strict DRC samples returned the same canonical leaf set"
+          : "strict DRC samples returned different canonical leaf sets",
+    },
+    samples: sampleReports.map(({ canonicalLeaves, summary, ...sample }) => ({
+      ...sample,
+      passed: summary.passed,
+      passedWithExceptions: summary.passedWithExceptions === true,
+      errorCount: summary.errorCount,
+      warningCount: summary.warningCount || 0,
+    })),
+    observedNonPassingSampleIds: nonPassingSamples.map((sample) => sample.id),
+    observedLeaves,
+  };
+}
+
+function summarizePcbDrc(drc, options, documentInfo, projectInfo) {
   const summary = summarizeDrc(drc);
   const exception = options.nativeNetlistCacheException;
   if (!exception || summary.passed) return summary;
   const leaves = drcLeafErrors(drc);
   const pcbMatches = exception.artifact.pcbUuid === documentInfo?.uuid;
+  const projectMatches =
+    !exception.artifact.projectUuid ||
+    exception.artifact.projectUuid === projectInfo?.uuid;
   const solelyNativeCache =
     leaves.length > 0 &&
     leaves.every(
       (item) =>
         item.errorType === "Netlist Error" && item.ruleName === "Import Changes",
     );
-  if (!pcbMatches || !solelyNativeCache) {
+  if (!pcbMatches || !projectMatches || !solelyNativeCache) {
     return {
       ...summary,
       exceptionRejected: !pcbMatches
         ? `manufacturing-netlist artifact PCB ${exception.artifact.pcbUuid} does not match active PCB ${documentInfo?.uuid || "<unknown>"}`
+        : !projectMatches
+          ? `manufacturing-netlist artifact project ${exception.artifact.projectUuid} does not match active project ${projectInfo?.uuid || "<unknown>"}`
         : "DRC contains errors other than the documented native Import Changes cache mismatch",
     };
   }
@@ -543,6 +1038,7 @@ function summarizePcbDrc(drc, options, documentInfo) {
     passedWithExceptions: true,
     errorCount: 0,
     rawErrorCount: leaves.length,
+    rawErrors: summary.errors,
     errors: [],
     warningCount: summary.warningCount || 0,
     warnings: summary.warnings || [],
@@ -1115,7 +1611,139 @@ function analyzeRoutingTopology(raw, options = {}) {
   };
 }
 
-function analyzeSchematic(raw, source) {
+function schematicWirePaths(line) {
+  if (!Array.isArray(line)) return [];
+  if (line.every((value) => typeof value === "number")) return [line];
+  return line.filter(
+    (path) =>
+      Array.isArray(path) && path.every((value) => typeof value === "number"),
+  );
+}
+
+function schematicWireGeometry(wire) {
+  const paths = schematicWirePaths(wire?.line);
+  let length = 0;
+  let segmentCount = 0;
+  for (const path of paths) {
+    for (let index = 2; index + 1 < path.length; index += 2) {
+      length += Math.hypot(
+        path[index] - path[index - 2],
+        path[index + 1] - path[index - 1],
+      );
+      segmentCount += 1;
+    }
+  }
+  return {
+    primitiveId: wire?.primitiveId || null,
+    net: wire?.net || "",
+    length,
+    segmentCount,
+  };
+}
+
+function analyzeSchematicPresentation(raw = {}) {
+  const hasWireGeometry = Array.isArray(raw.schematicWires);
+  const hasAnnotations = Array.isArray(raw.schematicAnnotations);
+  const componentCount = (raw.components || []).length;
+  if (!hasWireGeometry || !hasAnnotations) {
+    return {
+      status: "UNVERIFIED",
+      available: false,
+      blocking: false,
+      requiresVisualReview: true,
+      observations: [
+        "schematic wire geometry or connectivity-annotation readback is missing",
+      ],
+      metrics: {
+        componentCount,
+        wireCount: raw.wireCount || 0,
+        annotationCount: null,
+      },
+    };
+  }
+
+  const wires = raw.schematicWires.map(schematicWireGeometry);
+  const wireCount = wires.length;
+  const annotationCount = raw.schematicAnnotations.length;
+  const netportCount = raw.schematicAnnotations.filter(
+    (item) => item.componentType === "netport",
+  ).length;
+  const shortStubCount = wires.filter(
+    (item) => item.segmentCount === 1 && item.length <= 15,
+  ).length;
+  const multiSegmentWireCount = wires.filter(
+    (item) => item.segmentCount > 1,
+  ).length;
+  const maximumWireLength = wires.reduce(
+    (maximum, item) => Math.max(maximum, item.length),
+    0,
+  );
+  const shortStubRatio = wireCount ? shortStubCount / wireCount : 0;
+  const multiSegmentWireRatio = wireCount
+    ? multiSegmentWireCount / wireCount
+    : 0;
+  const annotationPerComponent = componentCount
+    ? annotationCount / componentCount
+    : 0;
+
+  const degradedLabelStubPattern =
+    componentCount >= 8 &&
+    wireCount >= Math.max(24, componentCount * 3) &&
+    annotationCount >= Math.max(12, componentCount) &&
+    shortStubRatio >= 0.95 &&
+    multiSegmentWireCount === 0 &&
+    maximumWireLength <= 20;
+  const reviewPattern =
+    !degradedLabelStubPattern &&
+    componentCount >= 4 &&
+    wireCount >= 12 &&
+    annotationCount >= Math.max(6, Math.ceil(componentCount / 2)) &&
+    shortStubRatio >= 0.8 &&
+    multiSegmentWireRatio <= 0.1;
+
+  const observations = [];
+  if (degradedLabelStubPattern) {
+    observations.push(
+      "the page is dominated by one-segment short stubs and connectivity annotations, with no multi-segment functional wiring",
+    );
+  } else if (reviewPattern) {
+    observations.push(
+      "short stubs and connectivity annotations dominate the page; inspect functional-block continuity before schematic handoff",
+    );
+  }
+
+  return {
+    status: degradedLabelStubPattern
+      ? "DEGRADED_LABEL_STUB_PATTERN"
+      : reviewPattern
+        ? "REVIEW_REQUIRED"
+        : "CLEAR",
+    available: true,
+    blocking: degradedLabelStubPattern,
+    requiresVisualReview: degradedLabelStubPattern || reviewPattern,
+    observations,
+    metrics: {
+      componentCount,
+      wireCount,
+      annotationCount,
+      netportCount,
+      shortStubCount,
+      shortStubRatio,
+      multiSegmentWireCount,
+      multiSegmentWireRatio,
+      maximumWireLength,
+      annotationPerComponent,
+      schematicUnit: "10mil",
+      shortStubThreshold: 15,
+    },
+    limitations: [
+      "This geometry screen detects an extreme label/stub presentation pattern; it does not prove circuit correctness or judge every legitimate connector or cross-sheet labeling style.",
+      "A visual review of the saved/reopened exact page is still required before schematic handoff.",
+    ],
+  };
+}
+
+function analyzeSchematic(raw, source, options = {}) {
   const drc = summarizeDrc(raw.drc);
   const designators = designatorIssues(raw.components || []);
   const missingFootprints = (raw.components || [])
@@ -1132,6 +1760,28 @@ function analyzeSchematic(raw, source) {
   if (missingFootprints.length) {
     failures.push("one or more PCB-included components lack footprints");
   }
+  const componentSelectionEvidence = validateComponentEvidenceRecord(
+    options.componentEvidenceRecord,
+    raw,
+    { baseDir: options.componentEvidenceBaseDir || process.cwd() },
+  );
+  failures.push(...componentSelectionEvidence.violations);
+  const presentation = analyzeSchematicPresentation(raw);
+  if (presentation.blocking) {
+    failures.push(
+      "schematic presentation is dominated by label/stub fragments and lacks readable functional wiring",
+    );
+  }
+  const unverified = [...componentSelectionEvidence.unverified];
+  if (!presentation.available) {
+    unverified.push(
+      "schematic presentation geometry is unavailable for readability screening",
+    );
+  } else if (presentation.requiresVisualReview && !presentation.blocking) {
+    unverified.push(
+      "schematic presentation requires visual review before handoff",
+    );
+  }
 
   const warnings = [];
   if (drc.warningCount) {
@@ -1139,11 +1789,16 @@ function analyzeSchematic(raw, source) {
       `schematic ERC returned ${drc.warningCount} warning(s) and zero error groups`,
     );
   }
+  warnings.push(...presentation.observations);
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 5,
     evidence: "RULE_CHECK",
-    decision: failures.length ? DECISIONS.FAIL : DECISIONS.PASS_WITH_EXCEPTIONS,
+    decision: failures.length
+      ? DECISIONS.FAIL
+      : unverified.length
+        ? DECISIONS.UNVERIFIED
+        : DECISIONS.PASS_WITH_EXCEPTIONS,
     fabricationRelease: false,
     manufacturingOutputsReviewed: false,
     notAFabricationRelease: notAFabricationReleaseMessage(),
@@ -1153,14 +1808,24 @@ function analyzeSchematic(raw, source) {
     design: {
       project: raw.project,
       document: raw.document,
+      fingerprint: designFingerprint(raw),
       componentCount: (raw.components || []).length,
       wireCount: raw.wireCount || 0,
     },
-    checks: { drc, designators, missingFootprints },
+    checks: {
+      drc,
+      designators,
+      missingFootprints,
+      componentSelectionEvidence,
+      presentation,
+    },
     failures,
+    unverified,
     warnings,
     limitations: [
-      "DRC and metadata do not prove the circuit topology, values, ratings, pin mapping, or connector mating view.",
+      "A cleared component-selection evidence record proves traceability and exact metadata binding, not circuit correctness.",
+      "DRC and metadata do not prove the circuit topology, derived values, ratings margin, pin mapping, or connector mating view.",
+      "Presentation geometry screening does not replace exact-page visual review or justify drawing a literal power/ground loop.",
       "Power integrity, protection, reset/boot states, clocks, and no-connect intent require schematic review.",
       "Unrouted nets, pin-map correctness, and manufacturing outputs are outside this baseline audit.",
     ],
@@ -1169,7 +1834,7 @@ function analyzeSchematic(raw, source) {
 
 function analyzePcb(raw, options, source) {
   const tolerance = 0.05;
-  const drc = summarizePcbDrc(raw.drc, options, raw.document);
+  const drc = summarizePcbDrcEvidence(raw, options);
   const designators = designatorIssues(raw.components || []);
   const layerById = new Map((raw.layers || []).map((layer) => [layer.id, layer]));
   const outlineLayerIds = new Set(
@@ -1208,40 +1873,10 @@ function analyzePcb(raw, options, source) {
     tolerance,
   );
   const routingLayerUsage = summarizeRoutingLayers(routedLines, layerById);
-  const freeCopperIds = new Set(
-    drcLeafErrors(raw.drc)
-      .filter(
-        (item) =>
-          item.isFree === true ||
-          item.explanation?.param?.type === "ConnectError" ||
-          item.explanation?.errData?.errorType === "No Connection",
-      )
-      .flatMap((item) => item.objs || [item.explanation?.errData?.obj1])
-      .filter(Boolean),
+  const freeCopperIds = freeCopperPrimitiveIds(drcLeafErrors(raw.drc));
+  const pours = (raw.pours || []).map((pour) =>
+    analyzePourConnectivity(pour, freeCopperIds),
   );
-  const pours = (raw.pours || []).map((pour) => {
-    const solidFillIds = Array.isArray(pour.solidFillIds)
-      ? pour.solidFillIds.filter(nonemptyString)
-      : [];
-    const freeSolidFillIds = solidFillIds.filter((id) => freeCopperIds.has(id));
-    const fillConnectivityProven =
-      solidFillIds.length > 0 && freeSolidFillIds.length === 0;
-    const passed = Boolean(
-      pour.hasCopper &&
-        pour.fillCount > 0 &&
-        pour.solidFillCount > 0 &&
-        (!pour.preserveSilos || fillConnectivityProven),
-    );
-    return {
-      ...pour,
-      solidFillIds,
-      freeSolidFillIds,
-      preserveSilosStateIgnored: Boolean(
-        passed && pour.preserveSilos && fillConnectivityProven,
-      ),
-      passed,
-    };
-  });
   const validGroundPour = pours.some(
     (pour) => pour.net === options.groundNet && pour.passed,
   );
@@ -1268,7 +1903,9 @@ function analyzePcb(raw, options, source) {
     );
   }
   if (pours.some((pour) => !pour.passed)) {
-    failures.push("one or more copper pours are unfilled or preserve islands");
+    failures.push(
+      "one or more copper pours are unfilled, have incomplete solid-fill ID evidence, or contain free copper",
+    );
   }
   if (options.requireGroundPour && !validGroundPour) {
     failures.push(`no valid filled ${options.groundNet} pour was found`);
@@ -1348,6 +1985,11 @@ function analyzePcb(raw, options, source) {
     ...(raw.pours || []).map((item) => item.net),
   ].filter(Boolean);
   const fingerprint = designFingerprint(raw);
+  const evidenceBindingFingerprint = constraintFingerprint({
+    designFingerprint: fingerprint,
+    drcRuleConfigurationName: drc.ruleBinding.name,
+    drcRuleConfigurationFingerprint: drc.ruleBinding.fingerprint,
+  });
   const highSpeedConstraintFingerprint = constraintFingerprint(
     options.highSpeedConstraintRecord,
   );
@@ -1374,6 +2016,28 @@ function analyzePcb(raw, options, source) {
       })
     : { cleared: true, reason: "no high-speed net hints" };
   const unverified = [];
+  if (!drc.evidenceVerified) {
+    unverified.push(
+      `PCB DRC evidence is not closure-grade: ${drc.ruleBinding.reason}; ${drc.repeatability.reason}`,
+    );
+  }
+  const testSource = /^(?:test|self-test)/.test(source?.kind || "");
+  const placementClearance = testSource && !options.placementAuditRecord
+    ? { cleared: true, blocking: false, reason: "unit-test fixture bypass" }
+    : placementAuditClearance(options.placementAuditRecord, {
+        projectUuid: raw.project?.uuid,
+        documentUuid: raw.document?.uuid,
+        designFingerprint: fingerprint,
+      });
+  if (placementClearance.blocking) {
+    failures.push(`placement audit is blocked: ${placementClearance.reason}`);
+  } else if (!placementClearance.cleared) {
+    unverified.push(`placement/assembly closure is missing: ${placementClearance.reason}`);
+  } else if (!testSource) {
+    warnings.push(
+      `placement/assembly closure is bound to the current PCB: ${options.placementAuditReport}`,
+    );
+  }
   if (hintedCrystalNets.length && !crystalClearance.cleared) {
     unverified.push(
       `possible crystal/clock nets detected (${hintedCrystalNets.join(
@@ -1418,7 +2082,7 @@ function analyzePcb(raw, options, source) {
   else decision = DECISIONS.PASS_WITH_EXCEPTIONS;
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 9,
     evidence: "RULE_CHECK",
     decision,
     fabricationRelease: false,
@@ -1431,6 +2095,7 @@ function analyzePcb(raw, options, source) {
       project: raw.project,
       document: raw.document,
       fingerprint,
+      evidenceBindingFingerprint,
       netCount: new Set(allNetNames).size,
       layerCount: (raw.layers || []).length,
       componentCount: (raw.components || []).length,
@@ -1451,7 +2116,15 @@ function analyzePcb(raw, options, source) {
       highSpeedConstraints: options.highSpeedConstraints || null,
       highSpeedConstraintFingerprint,
       highSpeedAuditReport: options.highSpeedAuditReport || null,
+      netlistCompareReport: options.netlistCompareReport || null,
+      placementAuditReport: options.placementAuditReport || null,
       nativeNetlistCacheException: options.nativeNetlistCacheException || null,
+      drcRuleBinding: {
+        captured: drc.ruleBinding.captured,
+        stable: drc.ruleBinding.stable,
+        name: drc.ruleBinding.name,
+        fingerprint: drc.ruleBinding.fingerprint,
+      },
     },
     checks: {
       drc,
@@ -1467,6 +2140,7 @@ function analyzePcb(raw, options, source) {
       hintedHighSpeedNets,
       highSpeedDiscovery: highSpeedDiscoveryResult,
       highSpeedClearance,
+      placementClearance,
       manufacturing,
       unverified,
       outline: {
@@ -1482,7 +2156,7 @@ function analyzePcb(raw, options, source) {
       ...routingTopology.limitations,
       ...sharpRightAngleCorners.limitations,
       "Unrouted connections and netlist equivalence must be confirmed in EasyEDA.",
-      "DRC does not prove current capacity, thermal behavior, return-path quality, placement quality, polarity, or mechanical fit.",
+      "The bound placement audit checks declared geometry and interface policy but does not replace enclosure, assembler, or process evidence.",
       "Manufacturing outputs, BOM, and pick-and-place files require separate human-attested review.",
       "Crystal electrical values, oscillator margin, ground/keepout policy, and noise coupling require datasheet-backed manual review.",
       "High-speed/impedance claims require easyeda_high_speed_audit.mjs and cannot be closed by this baseline audit alone.",
@@ -1491,13 +2165,44 @@ function analyzePcb(raw, options, source) {
 }
 
 function analyze(raw, options, source) {
-  if (raw.kind === "schematic") return analyzeSchematic(raw, source);
+  if (raw.kind === "schematic") return analyzeSchematic(raw, source, options);
   if (raw.kind === "pcb") return analyzePcb(raw, options, source);
   throw new Error(`unsupported audit kind: ${raw.kind}`);
 }
 
+function bindPcbDrcEvidence(
+  raw,
+  {
+    results = [raw.drc, raw.drc, raw.drc],
+    ruleBefore = {
+      name: "Self Test Two Layer Rules",
+      configuration: { clearance: { trackToTrack: 0.1016 } },
+    },
+    ruleAfter = ruleBefore,
+  } = {},
+) {
+  const samples = [
+    { id: "silent-1", userInterface: false },
+    { id: "silent-2", userInterface: false },
+    { id: "visible-final", userInterface: true },
+  ].map((sample, index) => ({
+    ...sample,
+    strict: true,
+    includeVerboseError: true,
+    result: results[index],
+  }));
+  raw.drc = results.at(-1);
+  raw.drcEvidence = {
+    schemaVersion: 1,
+    ruleBefore,
+    ruleAfter,
+    samples,
+  };
+  return raw;
+}
+
 function pcbFixture() {
-  return {
+  return bindPcbDrcEvidence({
     kind: "pcb",
     project: { uuid: "self-test", name: "Self Test" },
     document: { uuid: "pcb", name: "PCB", documentType: 3 },
@@ -1542,13 +2247,19 @@ function pcbFixture() {
         hasCopper: true,
         fillCount: 1,
         solidFillCount: 1,
+        solidFillIds: ["fill1"],
       },
     ],
     drc: [],
-  };
+  });
 }
 
 function schematicFixture() {
+  const schematicWires = Array.from({ length: 12 }, (_, index) => ({
+    primitiveId: `wire-${index + 1}`,
+    net: index % 2 ? "GND" : "+3V3",
+    line: [0, index * 20, 40, index * 20, 40, index * 20 + 20],
+  }));
   return {
     kind: "schematic",
     project: { uuid: "self-test", name: "Self Test" },
@@ -1562,15 +2273,21 @@ function schematicFixture() {
         footprint: { libraryUuid: "lib", uuid: "fp", name: "LQFP48" },
       },
     ],
-    wireCount: 12,
+    wireCount: schematicWires.length,
+    schematicAnnotations: [],
+    schematicWires,
     drc: [],
   };
 }
 
 async function main() {
   try {
-    const options = await loadHighSpeedConstraintRecord(
-      parseArgs(process.argv.slice(2)),
+    const options = await loadPlacementAuditReport(
+      await loadComponentEvidenceRecord(
+        await loadNetlistCompareReport(
+          await loadHighSpeedConstraintRecord(parseArgs(process.argv.slice(2))),
+        ),
+      ),
     );
     if (options.selfTest) {
       const pcb = analyze(pcbFixture(), options, { kind: "self-test" });
@@ -1648,7 +2365,7 @@ async function main() {
       const hsHint = analyze(hsHintFixture, options, { kind: "self-test-hs-hint" });
       if (
         pcb.decision !== DECISIONS.PASS_WITH_EXCEPTIONS ||
-        schematic.decision !== DECISIONS.PASS_WITH_EXCEPTIONS ||
+        schematic.decision !== DECISIONS.UNVERIFIED ||
         failingPcb.decision !== DECISIONS.FAIL ||
         cyclePcb.decision !== DECISIONS.FAIL ||
         cyclePcb.checks.routingTopology.unexpectedCycles[0] !== "SIGNAL" ||
@@ -1723,13 +2440,23 @@ export {
   analyzePcb,
   analyzeRoutingTopology,
   analyzeSchematic,
+  analyzeSchematicPresentation,
   applyDecisionExitCode,
+  bindPcbDrcEvidence,
+  canonicalDrcLeaves,
   collectorCode,
+  drcRuleBinding,
   loadHighSpeedConstraintRecord,
+  loadNetlistCompareReport,
+  loadComponentEvidenceRecord,
+  loadPlacementAuditReport,
+  placementAuditClearance,
   parseArgs,
   pcbFixture,
   resolveWindow,
   schematicFixture,
+  summarizePcbDrcEvidence,
+  validateNetlistCompareExceptionArtifact,
 };
 
 if (

@@ -42,9 +42,15 @@ For every pour:
 1. call `getCopperRegion()`;
 2. require a non-undefined result;
 3. call `getState_PourFills()`;
-4. require at least one `fill === true` record;
-5. inspect `getState_PreserveSilos()`;
-6. run DRC after rebuilding.
+4. require at least one `fill === true` record and capture every solid record's
+   unique `id`, `path`, and `lineWidth`;
+5. require unique solid-fill ID count to equal solid-fill count;
+6. inspect `getState_PreserveSilos()` as source-policy readback, not proof of
+   connectivity;
+7. run detailed DRC after rebuilding and reject any free-copper/no-connection
+   result targeting any solid-fill ID;
+8. repair and rebuild any disconnected sibling region before treating the Pour
+   as a reference structure.
 
 Do not equate `Boolean(rebuildCopperRegion())` with success until the associated filled-copper state is read back.
 
