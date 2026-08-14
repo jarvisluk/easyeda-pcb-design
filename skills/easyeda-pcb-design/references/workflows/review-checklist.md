@@ -3,6 +3,7 @@
 ## Contents
 
 - Select the review scope
+- Load in stages, not all at once
 - Schematic
 - Footprints and placement
 - PCB
@@ -31,6 +32,56 @@ fabrication until the required high-speed evidence is attached. Manufacturing
 outputs remain unreviewed unless the required artifact and human review evidence
 exists. Explain those limits naturally, with the concrete missing evidence and
 next action.
+
+## Load in stages, not all at once
+
+A fabrication-readiness question expands the reviewed scope to the whole design,
+but it does not require loading every design reference before you start. Reviewing
+is mostly deciding whether required evidence exists, binds to this revision, and
+carries a recognized status. That is a different task from re-deriving the rule
+behind a finding.
+
+Load in this order and stop when the review is answerable:
+
+1. **This checklist**, plus [drc-evidence-closure.md](drc-evidence-closure.md)
+   for PCB DRC and [manufacturing-output.md](../api/manufacturing-output.md) when
+   outputs are in scope. Together they tell you
+   which artifacts the reviewed scope requires.
+2. **The evidence inventory.** Bind the revision and enumerate each required
+   artifact as present and bound, present but stale, or absent. Absent or stale
+   evidence is already the answer: the conclusion is `UNVERIFIED FOR FABRICATION`
+   with the missing item named. You do not need the design reference for a rule
+   whose evidence does not exist yet.
+3. **The reference behind any result you must judge.** Presence is not the only
+   thing that needs checking: an artifact can be present, bound, and self-report
+   clean while still resting on an unsound basis. Load the governing reference
+   whenever you accept or reject such a result, and always load
+   [placement-closure.md](../layout/placement-closure.md) before accepting a
+   placement report, since a report can read `PLACEMENT_CLEAR_FOR_ROUTING` on a
+   reconstructed constraint basis. Otherwise load the one reference that governs
+   the finding: [layout-rules.md](../layout/layout-rules.md) for routing or
+   clearance, [impedance-and-vias.md](../high-speed/impedance-and-vias.md) for
+   controlled impedance, [stackup-planning.md](../layout/stackup-planning.md) for
+   layer roles or reference assignment, or
+   [power-layout.md](../layout/power-layout.md) for a regulator loop.
+
+This ordering never lowers the evidence bar. Every artifact the scope requires is
+still required, and skipping a reference is not permission to skip its gate. It
+only prevents reading the whole rulebook before establishing whether the evidence
+that rulebook would interpret exists at all.
+
+Report findings in this severity order, highest first:
+
+1. anything that makes the board not work, unsafe, or unfabricable as drawn;
+2. an observed rule or constraint violation, including any audit `FAIL`;
+3. missing or stale required evidence, which yields
+   `UNVERIFIED FOR FABRICATION` rather than a pass;
+4. a reconstructed or assumed basis that a human must confirm;
+5. cost, manufacturability, or maintainability improvements that block nothing.
+
+Rank within a tier by whether the finding blocks fabrication. Never present a
+lower tier before a higher one, and never let a long list of tier-5 observations
+obscure a single tier-1 finding.
 
 ## Schematic
 
@@ -70,6 +121,14 @@ next action.
 - `checks.presentation` is not `DEGRADED_LABEL_STUB_PATTERN`; any
   `REVIEW_REQUIRED` result has exact-page visual evidence and a specific
   connector-map, hierarchy, or cross-sheet rationale.
+- Every part symbol holds a deliberate, unique pose inside its functional-block
+  region, with room for its pins, designator/value text, and wiring.
+- A schematic page-envelope record is bound to the exact page with a stated
+  source, and no symbol or its attribute text lies outside it.
+  `checks.symbolPlacement` is not `DEGRADED_SYMBOL_PLACEMENT`; intersecting
+  symbol BBoxes and a crowded coordinate spread have exact-page visual evidence,
+  since the schematic BBox API is beta and includes attribute text. An absent
+  envelope record leaves page overrun unscreened rather than cleared.
 - Schematic DRC clean or exceptions documented.
 
 ## Footprints and placement
@@ -180,7 +239,8 @@ next action.
 - No unwanted islands or narrow copper necks; `preserveSilos=false` alone is
   not accepted as evidence that isolated copper was removed.
 - PCB DRC clean or exceptions documented.
-- The rule-bound repeated DRC protocol in `drc-evidence-closure.md` is complete:
+- The rule-bound repeated DRC protocol in
+  [drc-evidence-closure.md](drc-evidence-closure.md) is complete:
   `checks.drc.evidenceVerified` is true, both silent samples and the visible
   final sample have the same canonical leaf set, and the start/end full-rule
   fingerprints match. A prior clean report is marked stale after any

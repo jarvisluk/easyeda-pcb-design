@@ -25,7 +25,7 @@ those calls.
    `SYS_FileSystem.saveFileToFileSystem(path, file, undefined, false)`.
 5. Verify each host file exists, is non-empty, has the expected MIME/file
    signature, and record SHA-256.
-6. Run `scripts/easyeda_manufacturing_audit.py` and retain its JSON.
+6. Run `scripts/audits/easyeda_manufacturing_audit.py` and retain its JSON.
 7. Only after all API design and manufacturing operations are complete, do the
    final read-only Gerber/2D/3D visual regression allowed by the task.
 

@@ -134,7 +134,7 @@ Two gates shape the lifecycle:
 Any write to EasyEDA additionally loads [`live-build-gates.md`](skills/easyeda-pcb-design/references/workflows/live-build-gates.md) and [`api-map.md`](skills/easyeda-pcb-design/references/api/api-map.md), then runs:
 
 ```bash
-node skills/easyeda-pcb-design/scripts/check_companion.mjs
+node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 ```
 
 Work may continue only when the command exits with code `0` and reports `ready: true`. Project and document UUIDs are bound before writes. Every operation is awaited, and semantic readback from the saved and reopened design is authoritative.
@@ -230,6 +230,12 @@ In addition to schematic, PCB, DRC, and manufacturing outputs, the review requir
     │   ├── api/                  # Live API and manufacturing-output boundaries
     │   └── supporting/           # Calculations, sources, and worked example
     └── scripts/                  # Repeatable checks, audits, and calculators
+        ├── audits/               # Design, placement, high-speed, netlist, manufacturing audits
+        ├── calc/                 # Analytical calculators and tests
+        ├── lib/                  # Shared audit helpers and geometry utilities
+        ├── lints/                # Baseline, component, constraint, and stackup lints
+        ├── live/                 # Companion, identity, revision, snapshot, and gate-ledger checks
+        └── tests/                # Cross-script regression suite
 ```
 
 `skills/easyeda-pcb-design/` is the installation boundary. Repository-level files and local `designs/` projects are not part of the skill and must not be copied into an installation.

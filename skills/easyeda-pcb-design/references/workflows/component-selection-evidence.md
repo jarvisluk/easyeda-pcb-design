@@ -427,6 +427,18 @@ Search and bind the exact manufacturer part number first. Record one resolution:
 - `BLOCKED` — exact binding or approved substitution is unresolved. Stop the
   dependent schematic and handoff work.
 
+Search the library by manufacturer part number, never by a value-plus-package
+string. A query such as `10pF 0603` matches any library entry whose text contains
+those tokens, including LEDs and other parts whose footprint name is `0603`, so
+the result set does not establish part class, value, tolerance, voltage, or
+dielectric. Resolve the exact MPN from the governing source first, search for
+that MPN, then read back `getState_Manufacturer()` and
+`getState_ManufacturerId()` on the placed component and require them to match the
+evidence record. Accepting a search hit because its displayed name looks close
+enough is a selection failure, not a shortcut; if MPN search returns nothing,
+record `BLOCKED` or build a `CUSTOM_EXACT_DEVICE` rather than substituting a
+similar-looking entry.
+
 When the library lacks the requested exact part:
 
 1. Keep the requested MPN and verified source decision unchanged.
@@ -437,8 +449,8 @@ When the library lacks the requested exact part:
    or the user separately approves the substitution.
 
 Use `FORBID` for a user-named exact part unless the user explicitly changes that
-decision. `AI_DEDICATED` authorizes scoped CAD execution; it does not authorize
-changing an exact MPN. Other policies are `ALLOW_FORM_FIT_FUNCTION` and
+decision. Authorization to execute CAD work never authorizes changing an exact
+MPN. Other policies are `ALLOW_FORM_FIT_FUNCTION` and
 `ALLOW_FUNCTIONAL_ALTERNATIVE`.
 
 An `APPROVED_SUBSTITUTE` needs a reason, approval reference, the candidate's own
@@ -469,7 +481,7 @@ old record to make it describe a newer schematic.
 Run the baseline audit with the record:
 
 ```bash
-node scripts/easyeda_design_audit.mjs \
+node scripts/audits/easyeda_design_audit.mjs \
   --component-evidence evidence/audits/component-selection-evidence.json \
   --output evidence/audits/design-audit.json
 ```
@@ -477,7 +489,7 @@ node scripts/easyeda_design_audit.mjs \
 For an offline captured design snapshot, validate only the selection evidence:
 
 ```bash
-node scripts/component_selection_evidence.mjs \
+node scripts/lints/component_selection_evidence.mjs \
   --record evidence/audits/component-selection-evidence.json \
   --design-snapshot evidence/snapshots/schematic-semantic.json \
   --output evidence/audits/component-selection-check.json

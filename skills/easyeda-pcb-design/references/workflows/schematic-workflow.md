@@ -53,9 +53,12 @@ cleared.
    board will expose or omit, alternatives, and material consequences before
    committing the full schematic. A `brief.md` summary alone does not close the
    gate.
-5. Draw one functional block at a time and keep signal flow readable. After the
-   first completed block, save/reopen and close its presentation canary before
-   expanding the same API pattern across the page.
+5. Declare the drawable page envelope, reserve a page region per functional
+   block, and give every symbol an explicit coordinate and rotation from that
+   partition. Draw one functional block at a time and keep signal flow readable.
+   After the first completed block, save/reopen and close its presentation
+   canary, including symbol placement, before expanding the same API pattern
+   across the page.
 6. Connect every power and ground pin deliberately, including hidden units.
 7. Place local decoupling at every relevant supply pin and size bulk
    capacitance from the rail and load requirements.
@@ -70,7 +73,8 @@ cleared.
     connector pinouts from the mating side.
 12. Add test points only where their loading, stub, access, and shorting risk are
     acceptable.
-13. Run ERC and the schematic presentation screen, inspect every warning and
+13. Run ERC and the schematic presentation screen, including the symbol-placement
+    check against the declared page envelope, inspect every warning and
     no-connect marker, visually review the saved/reopened exact page, and verify
     schematic/netlist identity.
 
@@ -110,7 +114,9 @@ Review in this order:
 5. connector pinouts and mating view, signal directions, net labels, buses,
    crossings, dangling wires, and no-connect intent;
 6. presentation geometry and exact-page visual readability, including whether
-   short net-carrying stubs have replaced local functional wiring;
+   short net-carrying stubs have replaced local functional wiring, whether
+   symbols hold deliberate separated poses, and whether any symbol or its text
+   sits outside the declared drawable page area;
 7. revision-bound component-selection evidence, applicable
    datasheet/reference-design conformance, and specialized circuit checks;
 8. symbol-to-pad and footprint evidence when handoff readiness is in scope;

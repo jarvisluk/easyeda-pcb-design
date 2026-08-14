@@ -429,11 +429,11 @@ Run the deterministic consistency check before ordinary placement and after
 every invalidating change:
 
 ```bash
-python3 scripts/easyeda_stackup_decision_lint.py \
+python3 scripts/lints/easyeda_stackup_decision_lint.py \
   --record path/to/stackup-candidates.json \
   --output path/to/evidence/audits/stackup-decision-consistency.json
 
-python3 scripts/easyeda_constraint_lint.py \
+python3 scripts/lints/easyeda_constraint_lint.py \
   --record path/to/layout-constraints.json \
   --output path/to/evidence/audits/constraint-consistency.json
 ```

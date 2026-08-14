@@ -3,7 +3,7 @@
 ## Contents
 
 - Purpose
-- Authorization profiles
+- High-risk operations
 - Select the gate branch
 - New-construction state machine
 - Existing-schematic modification state machine
@@ -16,7 +16,8 @@
 - Routing and copper canaries
 - Failure escalation
 - Cleanup authorization
-- Evidence transactions
+- Gate ledger and evidence transactions
+  - Integrity and completion are separate axes
 
 ## Purpose
 
@@ -31,30 +32,26 @@ operation-scoped rollback artifact only after restoration is proven. Create a ne
 current document cannot be repaired without destructive mutation or its hidden
 document identity is demonstrably invalid.
 
-## Authorization profiles
+## High-risk operations
 
-Select and record one profile before the first live mutation:
+Use the selected gate branch to decide ordinary work. Local operations that are
+part of that branch — component placement, track/via replacement, rerouting,
+saving, removing temporary primitives created during the task, and regenerating
+derived copper fills — do not need separate confirmation merely because they
+delete and replace local primitives.
 
-- `USER_OWNED` is the default. Obtain operation-specific confirmation before
-  destructive deletion, bulk synchronization, mass identity/net changes,
-  forced overwrite, or another high-risk mutation.
-- `AI_DEDICATED` applies only after the user explicitly grants the agent full
-  control of the current project or revision. That grant is standing
-  authorization for project-local design mutations within the stated design
-  objective, including component placement, track/via replacement, rerouting,
-  saving, removing agent-created temporary primitives, and regenerating derived
-  copper fills. Do not request repeated confirmation solely because one of
-  these bounded transactions deletes and replaces local primitives.
+Obtain operation-specific confirmation before destructive deletion outside the
+selected branch, bulk synchronization, mass identity/net changes, forced
+overwrite, or another high-risk mutation. Before relying on that confirmation,
+append a `READ_ONLY` operation-log entry quoting the user's words and naming the
+operation they cover. An inferred grant, an enthusiastic generality, or an
+earlier task's grant is not one.
 
-The profile changes the confirmation boundary, not the verification standard.
-Both profiles require exact UUID binding, immutable pre-edit evidence,
+Every mutation requires exact UUID binding, immutable pre-edit evidence,
 operation-appropriate rollback evidence, bounded calls, saved-design readback,
-netlist/identity checks, and DRC. `AI_DEDICATED` does not authorize deletion or
-overwrite of the only recoverable project/revision, account/team/project
-administration, sharing/publishing, manufacturing release, ordering, or payment.
-Stop when the intended result is materially ambiguous in architecture, safety,
-mechanics, or fabrication, not merely because a covered local mutation is
-destructive.
+netlist/identity checks, and DRC. Stop when the intended result is materially
+ambiguous in architecture, safety, mechanics, or fabrication, not merely because
+an ordinary local mutation is destructive.
 
 ## Select the gate branch
 
@@ -81,6 +78,23 @@ the transaction deletes or replaces committed track/via, placement, or copper
 geometry while preserving identity and pad-net binding, or performs a similarly
 bounded non-netlist repair. The rest of the PCB may still be unfinished.
 
+Use **read-only review** when the user asked only to verify, assess, or judge
+readiness and you will write nothing. Advance in this order:
+
+1. `COMPANION_READY`
+2. `ACTIVE_REVISION_BOUND`
+3. `REVIEW_SCOPE_BOUND` — the reviewed scope is stated and the documents in it
+   are bound by UUID, so later findings cannot silently change subject.
+4. `EVIDENCE_INVENTORY_COMPLETE` — every evidence artifact the reviewed scope
+   requires is enumerated with its status: present and bound, present but stale,
+   or absent. Closing this gate does not require the artifacts to exist; it
+   requires the inventory to be complete and honest, because a missing artifact
+   is itself the review's finding and keeps the conclusion
+   `UNVERIFIED FOR FABRICATION`.
+
+Review closes no design gate and authorizes no write. If the user then asks for a
+change, select the applicable mutation branch and open its gates from the start.
+
 If a proposed continuation, modification, or repair crosses its boundary, stop
 the transaction and close the applicable stronger gate. Bulk schematic
 repopulation, `importChanges()`, and `setNetlist()` are construction operations;
@@ -100,6 +114,9 @@ Advance in this order:
 8. `FULL_ROUTING_CLEAR`
 9. `COPPER_CANARY_CLEAR`
 10. `DESIGN_CLOSURE`
+
+Record each transition in the gate ledger described under Gate ledger and
+evidence transactions, and run its lint before advancing.
 
 Do not skip a gate because a create, modify, import, or rebuild call returned a
 truthy value. A gate closes only after semantic readback from the saved design.
@@ -276,7 +293,7 @@ each transaction small enough to read back and roll back independently.
 Capture active-PCB semantic evidence directly into the project evidence tree:
 
 ```bash
-node scripts/easyeda_repair_snapshot.mjs \
+node scripts/live/easyeda_repair_snapshot.mjs \
   --output <project>/evidence/snapshots/pre-repair-<transaction>.json
 ```
 
@@ -287,12 +304,20 @@ Before deleting source primitives or another destructive source change, also
 preserve operation-scoped rollback evidence:
 
 - for a bounded geometry replacement, record every affected primitive and a
-  tested inverse transaction, or use a separately restorable native revision;
+  tested inverse transaction, or use a separately restorable native revision.
+  Because a deletion cannot be tested after the fact, prove the inverse before
+  deleting: either recreate the recorded primitives in a probe project to
+  confirm the create path reproduces them field-for-field, or take the
+  restorable revision. A recorded primitive list whose inverse was never
+  exercised leaves this gate open;
 - for fill-only copper regeneration, retain and bind the exact source Pour,
   capture its settings and generated Poured/fill IDs, delete only the derived
-  fills, rebuild that Pour once, then save and read back its fills and DRC. Under
-  `AI_DEDICATED`, this closes the operation rollback/evidence gate without a
-  native duplicate because the source definition remains authoritative. After
+  fills, rebuild that Pour once, then save and read back its fills and DRC. This
+  closes the operation rollback/evidence gate without a native duplicate only
+  because the retained source definition remains authoritative. Whether it was
+  in fact retained is only knowable after save/reopen, so treat a rebuild that
+  might alter the source Pour as a destructive source change and hold a tested
+  inverse or restorable revision before starting. After
   save/reopen, require field-for-field equality of the source Pour ID, net,
   layer, polygon, fill method, island policy, name, priority, line width, and
   lock state;
@@ -323,20 +348,21 @@ repair transaction acts as its own canary.
 
 Treat an EasyEDA Pro version, companion version, bridge version, or write API
 sequence as unqualified until it has a matching capability record. Run unknown
-or beta document-tree write sequences in a dedicated probe project, never in
-the user's production project.
+or beta document-tree write sequences in a dedicated probe project, never in the
+project holding the user's design. Authorization to design in that project is
+not authorization to learn API semantics inside it.
 
 Project creation is the exception to the dedicated-probe-location rule because
 the probe project does not exist yet and cannot be deleted through the
-companion. Qualify it as the bounded production-intended transaction described
+companion. Qualify it as the single final-named transaction described
 under the new-construction `PROJECT_BOUND` gate. A failed create with no
 enumerated UUID is a non-commit; a created but unexpected project tree is a
 failed live candidate that must be preserved and reported because automatic
 project cleanup is outside the authorization boundary.
 
-After the API retry ceiling, explicit user authorization may qualify a single
-UI project-creation recovery. Record the UI result, then use companion readback
-as authority. A known default scaffold closes empty-design-state only when its
+After the API retry ceiling, one operation-specific confirmation may qualify a
+single UI project-creation recovery. Record the UI result, then use companion
+readback as authority. A known default scaffold closes empty-design-state only when its
 schematic has zero `part` components and zero wires and its PCB has zero
 components, lines, arcs, vias, Pours/fills, and regions. Bind and reuse its
 blank Schematic and PCB rather than creating duplicates; preserve and stop on
@@ -350,9 +376,9 @@ The probe must record:
 - whether cleanup was authorized and completed;
 - the capability conclusion and its version scope.
 
-If a dedicated probe project cannot be created or selected, stop and ask for a
-safe test location. Do not learn beta API semantics by adding documents to the
-production project. Read [api-map.md](../api/api-map.md) for known runtime behavior and
+If a dedicated probe project cannot be created or selected, stop with the gate
+blocked until a safe test location exists. Do not learn beta API semantics by
+adding documents to the project holding the user's design. Read [api-map.md](../api/api-map.md) for known runtime behavior and
 exact API-specific restrictions.
 
 ## Schematic identity gate
@@ -382,14 +408,14 @@ the PCB component population and pad-net binding exist, save and reopen both
 documents, then run:
 
 ```bash
-node scripts/easyeda_netlist_compare.mjs \
+node scripts/audits/easyeda_netlist_compare.mjs \
   --schematic-page-uuid <page-uuid> \
   --schematic-uuid <parent-schematic-uuid> \
   --pcb-uuid <pcb-uuid> \
   --require-native-match \
   --output <project>/evidence/netlist/pre-routing-sync.json
 
-node scripts/easyeda_identity_preflight.mjs \
+node scripts/live/easyeda_identity_preflight.mjs \
   --schematic-page-uuid <page-uuid> \
   --schematic-uuid <parent-schematic-uuid> \
   --pcb-uuid <pcb-uuid> \
@@ -424,11 +450,12 @@ Any missing/extra component, net, pad number, pin-net or core-property
 difference; empty/divergent internal view; nonempty File comparison; component
 difference; partial net set; or unavailable evidence rejects the exception.
 Record the gate as `PCB_SYNC_VERIFIED_CACHE_EXCEPTION`, never as literal
-`PCB_SYNC_MATCH`. Under `USER_OWNED`, obtain explicit acceptance before routing;
-`AI_DEDICATED` standing project authorization covers the exception when needed
-for the stated objective. It permits routing canaries and design closure only;
-it does not erase the raw beta-comparator result, waive later connectivity/DRC
-checks, or support a fabrication-release conclusion by itself.
+`PCB_SYNC_MATCH`. Route past it only when this verified beta-comparator exception
+belongs to the selected synchronization branch or operation-specific acceptance
+is recorded. Report the exception and its evidence before routing. The exception
+permits routing canaries and design closure only; it does not erase the raw
+beta-comparator result, waive later connectivity/DRC checks, or support a
+fabrication-release conclusion by itself.
 
 Synchronization clearance still does not authorize routing. After the actual
 placement is saved/reopened, require the independent
@@ -450,7 +477,7 @@ At final PCB audit, pass the same strict comparator artifact directly to the
 baseline audit rather than restating it in a constraint record:
 
 ```bash
-node scripts/easyeda_design_audit.mjs \
+node scripts/audits/easyeda_design_audit.mjs \
   --netlist-compare-report <project>/evidence/netlist/final-sync.json \
   --component-evidence <project>/evidence/audits/component-selection.json \
   --placement-audit-report <project>/evidence/audits/placement-closure.json \
@@ -503,7 +530,7 @@ EasyEDA names such as `PCB4` are never the revision authority; the UUID manifest
 is authoritative.
 
 ```bash
-node scripts/easyeda_revision_guard.mjs \
+node scripts/live/easyeda_revision_guard.mjs \
   --manifest <project>/revision-manifest.json \
   --intent-role diagnostic \
   --parent-uuid <known-good-pcb-uuid> \
@@ -546,6 +573,12 @@ sequence to other layers.
 The immediate rebuild fill count is provisional. Save/switch/reopen and repeat
 the source-Pour plus every derived-fill readback before closing the canary.
 
+In new construction this closes `COPPER_CANARY_CLEAR`. The repair branch has no
+copper gate: a copper regeneration there is an ordinary bounded transaction, so
+record this same readback as the evidence for `BOUNDED_GEOMETRY_TRANSACTION` and
+`POST_EDIT_SEMANTICS_MATCH` instead of inventing a gate the branch does not
+define.
+
 ## Failure escalation
 
 Use this retry ceiling for the same failed gate and recorded hypothesis:
@@ -563,12 +596,12 @@ fallback. Do not invoke it after the API retry ceiling; UI recovery in this
 skill is limited to the separately qualified `PROJECT_BOUND` project-creation
 exception.
 
-`importChanges()` and `setNetlist()` are separate high-risk operations. Under
-`USER_OWNED` they require separate confirmation; under `AI_DEDICATED` the
-standing project authorization can cover them only when they are necessary for
-the stated objective and their stronger rollback/synchronization evidence is
-already closed. Authorization does not permit an unlimited fallback chain. Each call
-must test a recorded hypothesis and close the synchronization gate or stop.
+`importChanges()` and `setNetlist()` are separate high-risk operations. Run them
+only when the selected synchronization branch requires them, or when
+operation-specific confirmation is recorded, and only after stronger
+rollback/synchronization evidence is already closed. Authorization never permits
+an unlimited fallback chain. Each call must test a recorded hypothesis and close
+the synchronization gate or stop.
 
 The synchronization retry ceiling does not prohibit an independent,
 geometry-only repair transaction that passes the existing-board repair branch.
@@ -577,41 +610,180 @@ minimal repair of that transaction, then execute the tested inverse or restore
 the verified rollback artifact; otherwise stop. Do not
 continue expanding the edit.
 
-If a continuation transaction fails, follow the selected authorization profile
-and recorded inverse to remove only primitives created by that transaction or
-restore an unfinished placement move. Preserve all pre-existing committed
+If a continuation transaction fails, use the recorded inverse to remove only
+primitives created by that transaction or restore an unfinished placement move. Preserve all pre-existing committed
 geometry. Attempt at most one minimal correction to the failed continuation
 canary; if replacement of existing work is required, stop and enter bounded
 repair rather than broadening continuation.
 
 ## Cleanup authorization
 
-For `USER_OWNED`, when temporary live documents may be needed, request a scoped
-authorization at the start of the build. Recommended wording:
+When temporary live documents may be needed, obtain cleanup confirmation at the
+start of the build. Recommended wording:
 
-> Authorize deletion only of temporary documents created by the agent in this
+> Authorize deletion only of temporary documents created during this
 > task that are proven empty or semantically duplicate by UUID-bound readback.
 > Preserve every pre-existing document, the last-known-good revision, and any
 > user-named rollback revision. Record semantic evidence, the separately
 > verified rollback artifact, and document-tree readback
 > before and after each authorized deletion.
 
-Without this authorization, do not delete. Under `AI_DEDICATED`, agent-created
-temporary documents may be removed after UUID-bound proof that they are empty or
+Without this grant, do not delete. Once it is recorded, agent-created temporary
+documents may be removed after UUID-bound proof that they are empty or
 semantically duplicate, but preserve all pre-existing documents, the
 last-known-good revision, and user-named rollback revisions. Prefer a dedicated
 probe project and mark unresolved leftovers `needs-user-decision` in the manifest.
 
-## Evidence transactions
+## Gate ledger and evidence transactions
+
+`<project>` is the per-board working directory defined in
+[entry-routing.md](entry-routing.md). Paths shown without it are relative to it.
+
+Record the transaction's gate progression in
+`<project>/evidence/readbacks/gate-ledger.json` and its call history in
+`<project>/evidence/readbacks/operation-log.json`. The ledger makes a skipped gate
+detectable instead of merely discouraged; prose in chat or a summary table cannot
+close a gate.
+
+Ledger shape, validated by `easyeda_gate_ledger.mjs`:
+
+```json
+{
+  "schemaVersion": 1,
+  "branch": "new-construction",
+  "scope": "end-to-end",
+  "projectUuid": "<project-uuid>",
+  "operationLog": "operation-log.json",
+  "gates": [
+    {
+      "gate": "COMPANION_READY",
+      "state": "CLOSED",
+      "evidence": ["companion-check.json"]
+    }
+  ]
+}
+```
+
+Omit `projectUuid` only in the single case of closing `COMPANION_READY` at the
+start of a from-zero build, before any project exists. Every other branch and
+every later gate requires it, and the baseline audit rejects a ledger whose
+`projectUuid` does not equal the reviewed project.
+
+Use `branch: "read-only-review"` when the user asked only for verification and you
+will write nothing. Its gates are `COMPANION_READY`, `ACTIVE_REVISION_BOUND`,
+`REVIEW_SCOPE_BOUND`, and `EVIDENCE_INVENTORY_COMPLETE`, and it requires no
+operation log because it performs no writes. Never label a read-only review as a
+repair or continuation branch to satisfy the lint; a ledger that claims a
+transaction you did not perform is false evidence, and marking a mutation
+branch's gates `NOT_APPLICABLE` to force a pass defeats the ledger's purpose.
+
+`branch` is one of the five branches above. `scope` is `schematic-only`,
+`pcb-only`, or `end-to-end`. Gate `state` is `CLOSED`, `OPEN`, `BLOCKED`, or
+`NOT_APPLICABLE`; `PCB_SYNC_MATCH` additionally accepts
+`PCB_SYNC_VERIFIED_CACHE_EXCEPTION` as its only substitute. A `CLOSED` gate
+requires at least one existing, non-empty evidence artifact; declaring a gate
+closed with no artifact, out of canonical order, or past the scope's terminal
+gate is a lint failure.
+
+A `pcb-only` transaction does not skip the upstream schematic gates. Close them
+citing the bound handoff artifact as their evidence, so inherited clearance stays
+visible in the ledger instead of becoming a silent exemption.
+
+### Integrity and completion are separate axes
+
+The lint reports two independent results. Conflating them is what let a
+barely-started transaction read as closure:
+
+- `decision` is bookkeeping **integrity**: `CLEARED`, `UNVERIFIED`, or
+  `BLOCKED`. It answers whether the ledger can be trusted at all, and it alone
+  sets the exit code.
+- `completion` is whether the declared branch and scope reached their **terminal
+  gate**: `COMPLETE`, `TERMINAL_PENDING`, `INCOMPLETE`, or `INDETERMINATE`.
+
+`CLEARED` with `INCOMPLETE` is the normal, correct state of work in progress. It
+is not a failure and must not be reported as one: an honest early stop has to
+stay expressible, or the rewarded strategy becomes claiming a completion that did
+not happen. It is equally not a closure, and `remainingGates` names exactly what
+is still unsettled.
+
+`TERMINAL_PENDING` means every owned gate except the terminal one is settled.
+This is the expected state while running the closing audit, because that audit
+report is the terminal gate's own evidence and cannot exist beforehand. An
+intermediate gate may be `NOT_APPLICABLE` when the design genuinely lacks it; the
+terminal gate may not, since disowning the endpoint would fake completion.
+
+`easyeda_design_audit.mjs` enforces the split: an `INCOMPLETE` or
+`INDETERMINATE` ledger, or a ledger report predating this axis, keeps the audit
+`UNVERIFIED FOR FABRICATION` however clean every other check is. Do not work
+around it by relabeling scope or branch to move the terminal gate closer; that is
+false evidence in the same way as a mislabeled review branch.
+
+One ledger records one transaction, so a longer build produces several in
+sequence. Slice completion is a property of the current transaction, not of the
+whole task: the task is finished when the last transaction's ledger is `CLEARED`
+and its terminal gate closes on real audit evidence. Even then, completion means
+the declared slice ended, never that fabrication is authorized.
+
+Operation-log shape, append-only:
+
+```json
+{
+  "schemaVersion": 1,
+  "appendOnly": true,
+  "entries": [
+    {
+      "id": "op-0001",
+      "operation": "sch_PrimitiveComponent.create U1",
+      "outcome": "COMMITTED",
+      "semanticReadback": "saved, reopened page, U1 present with stable unique ID"
+    }
+  ]
+}
+```
+
+`outcome` is `COMMITTED`, `NOT_COMMITTED`, `COMMITTED_THEN_THREW`,
+`UNKNOWN_TIMEOUT`, or `READ_ONLY`. Every write attempt needs a
+`semanticReadback`, and a `UNKNOWN_TIMEOUT` entry needs the readback that
+resolved the unknown state. Entry ids must be unique: reusing an id, or replacing
+an earlier entry's conclusion in place, breaks the append-only contract and makes
+the log unusable as evidence. Append a corrected entry instead.
+
+Run the lint after each gate transition and before any closure claim:
+
+```bash
+node scripts/live/easyeda_gate_ledger.mjs \
+  --ledger <project>/evidence/readbacks/gate-ledger.json \
+  --require-gate PCB_SYNC_MATCH \
+  --output <project>/evidence/readbacks/gate-ledger-check.json \
+  --markdown <project>/evidence/readbacks/gate-ledger-status.md
+```
+
+Exit code `0` with `CLEARED` is required before advancing. Pass the cleared
+report to the final baseline audit with
+`easyeda_design_audit.mjs --gate-ledger <report>`; a missing or non-cleared
+ledger keeps the audit `UNVERIFIED FOR FABRICATION`, and a `BLOCKED` ledger makes
+it `FAIL`. The lint proves bookkeeping order and artifact existence only. It
+never reads an artifact's content, never proves that the artifact closes its
+gate, and is not a fabrication release.
+
+When a human-readable gate status, closure matrix, or progress summary is
+wanted, generate it with `--markdown` rather than transcribing the report by
+hand. A hand-written table can cite an artifact that does not exist, copy a gate
+state wrongly, or report integrity while dropping the completion axis, and no
+check would catch any of those. The rendered table states both axes, marks an
+owned gate the ledger never recorded as `NOT RECORDED`, and separates resolved
+evidence from declared-but-missing paths. Keep your own prose for the judgment
+the script cannot make — why a gate is still open and what the next action is —
+and do not restate a gate state that contradicts the generated table.
 
 Store evidence per logical transaction rather than per attempted primitive:
 
 - one immutable pre-transaction semantic capture;
 - one operation-scoped rollback evidence record when the transaction is destructive;
-- one append-only operation log containing every attempted call and semantic
-  readback, including a create that committed before throwing;
-- one post-transaction readback and gate decision.
+- the append-only operation log above, including a create that committed before
+  throwing and every timed-out call;
+- one post-transaction readback and gate decision recorded in the ledger.
 
-Do not create a new semantic capture for a read-only call or a failure proven to occur
-before any write. Preserve operation-level detail inside the transaction log so
-concision does not weaken rollback or auditability.
+Do not create a new semantic capture for a read-only call or a failure proven to
+occur before any write. Preserve operation-level detail inside the operation log
+so concision does not weaken rollback or auditability.

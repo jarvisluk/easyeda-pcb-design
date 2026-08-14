@@ -7,6 +7,9 @@
   directory so it remains self-contained.
 - Keep repository-level files such as `AGENTS.md`, `.gitignore`, user-facing
   README files, and local development data outside the installable skill.
+- Keep pure regression harnesses, prompt evals, CI wrappers, and other
+  repository-only validation under repository-level `tests/` or `tools/`; runtime
+  scripts inside the skill may keep `--self-test` checks for their own health.
 - Do not copy repository-level files or `designs/` into a skill installation.
 
 ## Skill architecture guardrails
@@ -21,8 +24,8 @@
 - Keep only these concerns in `SKILL.md`: trigger metadata, working-mode
   selection, baseline lifecycle, live API and authorization boundaries,
   technical-depth classification, direct reference routing, audit/evidence
-  entrypoints, the formal review output contract, and required regression
-  commands.
+  entrypoints, and the formal review output contract. Keep repository
+  maintenance commands, including skill change validation, in `AGENTS.md`.
 - Put specialized rules, schemas, API edge cases, examples, field lists, and
   audit implementation semantics in `references/`. Put deterministic or
   repeatedly used operations in `scripts/`. Keep each rule in one authoritative
@@ -47,12 +50,76 @@
 - Preserve the current human fabrication boundary, explicit high-risk-operation
   authorization, snapshot/readback requirements, and exact-revision evidence
   binding when simplifying text. Concision must not weaken safety or validation.
-- After any skill change, run the skill-creator `quick_validate.py`, all commands
-  listed under `SKILL.md`'s change-validation block, relative-link checks, the
-  over-100-line reference TOC check, and `git diff --check`. After a substantial
-  structural or behavioral revision, also run independent read-only forward
-  tests covering one baseline guidance request and one formal release or
-  specialized-technology request.
+- After any skill change, run the skill-creator `quick_validate.py`, the
+  change-validation commands below, relative-link checks, the over-100-line
+  reference TOC check, and `git diff --check`. After a substantial structural or
+  behavioral revision, also run independent read-only forward tests covering one
+  baseline guidance request and one formal release or specialized-technology
+  request.
+
+## Skill change validation
+
+Run from the repository root. These are repository maintenance commands; keep
+them out of the installable skill, which is consumed by agents designing boards
+rather than editing this skill.
+
+Start with the contract lint. It is the cheap tier: it proves prose and scripts
+still agree without starting an agent task, so it is the only command required
+after a documentation-only edit.
+
+```bash
+node tests/lints/skill_reference_contract_lint.mjs
+node tests/lints/skill_reference_contract_lint.mjs --self-test
+```
+
+`STALE_OPTION` and `MISSING_SCRIPT` mean a command block no longer matches its
+script. `ORPHAN_TOKEN` means prose names a status no script implements: either
+implement it or record it in `PROSE_ONLY_TOKENS` with a reason.
+`STALE_PROSE_ONLY_ENTRY` and `UNUSED_PROSE_ONLY_ENTRY` mean that allowlist has
+drifted from reality. The lint also prints the prose-only gates it accepts, so a
+gate that is enforced by agent judgment alone stays visible instead of being
+mistaken for a validated one.
+
+Then run the deterministic suites:
+
+```bash
+node tests/audits/easyeda_audit_tests.mjs
+python3 tests/calc/pcb_calc_tests.py
+node skills/easyeda-pcb-design/scripts/lints/requirements_baseline_lint.mjs --self-test
+node skills/easyeda-pcb-design/scripts/lints/component_selection_evidence.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_identity_preflight.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_revision_guard.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_repair_snapshot.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_gate_ledger.mjs --self-test
+node skills/easyeda-pcb-design/scripts/audits/easyeda_placement_audit.mjs --self-test
+node skills/easyeda-pcb-design/scripts/audits/easyeda_crystal_clock_audit.mjs --self-test
+python3 skills/easyeda-pcb-design/scripts/lints/easyeda_stackup_decision_lint.py --self-test
+python3 skills/easyeda-pcb-design/scripts/lints/easyeda_constraint_lint.py --self-test
+python3 skills/easyeda-pcb-design/scripts/audits/easyeda_manufacturing_audit.py --self-test
+node skills/easyeda-pcb-design/scripts/live/check_companion.mjs || true
+```
+
+Routing forward tests cover the behavioral surface no deterministic test reaches:
+entry-state classification, scope bounds, mode, technical-depth tier, and which
+references get loaded. Run the affected cases after editing the entrypoint's
+routing tables, tier triggers, or reference list.
+
+```bash
+node tests/routing/run_routing_case.mjs --list
+node tests/routing/run_routing_case.mjs --case <id>
+node tests/routing/run_routing_case.mjs --self-test
+```
+
+Hand the emitted prompt to a fresh-context, read-only agent session and compare
+its reply against the expectations the script prints. Never paste the
+expectations into that session; observing unprompted routing is the whole point,
+so a harness that fed them to the agent would prove nothing. Recorded pass
+baselines and what they deliberately do not cover are in
+`tests/routing/BASELINE.md`.
+
+The antenna case is the only automated coverage of the prose-only gates the
+contract lint reports, so keep it in the affected set whenever antenna or
+primary-function routing changes.
 
 ## PCB test and process files
 

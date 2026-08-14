@@ -10,7 +10,7 @@ import {
   constraintFingerprint,
   nonemptyString,
   resolveSafeOutputPath,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const SCHEMA_VERSION = 1;
 const RECORD_TYPE = "REQUIREMENTS_BASELINE";
@@ -91,7 +91,7 @@ function validateApproval(approval, sourceMap, problems, location) {
       problems,
       "APPROVAL_UNSUPPORTED",
       `${location}.kind`,
-      "approval must be ORIGINAL_REQUEST_EXPLICIT, USER_CONFIRMED, or USER_DELEGATED; AI_DEDICATED is not product-feature approval",
+      "approval must be ORIGINAL_REQUEST_EXPLICIT, USER_CONFIRMED, or USER_DELEGATED; agent authorization to act is not product-feature approval",
     );
   }
   validateSourceIds(approval.sourceIds, sourceMap, problems, `${location}.sourceIds`);
@@ -337,7 +337,7 @@ function parseArgs(argv) {
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(
-        "Usage: node requirements_baseline_lint.mjs --record FILE [--output FILE] [--force]\n",
+        "Usage: node scripts/lints/requirements_baseline_lint.mjs --record FILE [--output FILE] [--force]\n",
       );
       process.exit(0);
     } else {
@@ -427,9 +427,12 @@ function runSelfTest() {
   assert.match(JSON.stringify(missingCategoryResult.problems), /PRIMARY_FUNCTION_CATEGORY_UNCOVERED/);
   assert.match(JSON.stringify(missingCategoryResult.problems), /CORE_CAPABILITY_UNMAPPED/);
 
-  const aiApproval = structuredClone(valid);
-  aiApproval.primaryFunctions[1].approval.kind = "AI_DEDICATED";
-  assert.match(JSON.stringify(validateRequirementsBaseline(aiApproval).problems), /APPROVAL_UNSUPPORTED/);
+  const agentApproval = structuredClone(valid);
+  agentApproval.primaryFunctions[1].approval.kind = "AGENT_AUTHORIZED";
+  assert.match(
+    JSON.stringify(validateRequirementsBaseline(agentApproval).problems),
+    /APPROVAL_UNSUPPORTED/,
+  );
 
   const materialAssumption = structuredClone(valid);
   materialAssumption.requirements[0].status = "ASSUMPTION";

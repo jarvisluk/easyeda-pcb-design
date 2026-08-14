@@ -22,7 +22,7 @@ import {
   nonemptyString,
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const ACCESS_STATUSES = new Set([
   "AVAILABLE_VERIFIED",
@@ -1350,7 +1350,7 @@ function parseArgs(argv) {
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(
-        "Usage: node component_selection_evidence.mjs --record FILE --design-snapshot FILE [--output FILE] [--force]\n",
+        "Usage: node scripts/lints/component_selection_evidence.mjs --record FILE --design-snapshot FILE [--output FILE] [--force]\n",
       );
       process.exit(0);
     } else throw new Error(`unknown option: ${option}`);

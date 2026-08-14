@@ -10,7 +10,7 @@
 
 import { pathToFileURL } from "node:url";
 
-import { EXIT, checkCompanion, nonemptyString } from "./audit_common.mjs";
+import { EXIT, checkCompanion, nonemptyString } from "../lib/audit_common.mjs";
 
 function parseArgs(argv) {
   const options = { bridgePort: undefined, json: true };
@@ -25,7 +25,7 @@ function parseArgs(argv) {
       }
       options.bridgePort = port;
     } else if (option === "--help" || option === "-h") {
-      process.stdout.write(`Usage: node check_companion.mjs [--bridge-port PORT]\n`);
+      process.stdout.write(`Usage: node scripts/live/check_companion.mjs [--bridge-port PORT]\n`);
       process.exit(0);
     } else if (nonemptyString(option)) {
       throw new Error(`unknown option: ${option}`);

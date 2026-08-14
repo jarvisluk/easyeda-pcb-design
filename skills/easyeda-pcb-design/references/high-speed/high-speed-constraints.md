@@ -13,6 +13,22 @@ Pass a revision-controlled JSON file to `easyeda_high_speed_audit.mjs` with
 `--constraints FILE`. Command-line net and pair flags remain available for quick
 screening, but they cannot produce a fabrication-pass decision.
 
+Save, switch away, and reopen the PCB, then run:
+
+```bash
+node scripts/audits/easyeda_high_speed_audit.mjs \
+  --constraints <project>/high-speed-constraints.json \
+  --ground-net GND \
+  --output <project>/evidence/audits/high-speed-audit.json
+```
+
+Use a new output path per revision; do not overwrite prior evidence. Then bind the
+report to the baseline audit with `--high-speed-audit-report FILE` alongside
+`--high-speed-constraints FILE`. Running the audit does not close the gate: a
+`PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS` here is not a fabrication release,
+and the baseline audit stays `UNVERIFIED FOR FABRICATION` until this report's
+bindings and evidence fields are complete.
+
 Do not use silent interface defaults. Record the source for every limit.
 
 The baseline audit accepts this same file through

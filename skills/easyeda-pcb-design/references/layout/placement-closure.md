@@ -10,6 +10,7 @@
 - Component courtyards and critical zones
 - Human controls
 - External interfaces and BOM normalization
+- Author the record for a board you did not place
 - Run the placement gate
 - Interpret results
 - Invalidation and final review
@@ -65,9 +66,16 @@ Keep the following fields in the exact-revision `layout-constraints.json`.
 `easyeda_constraint_lint.py` validates their schema before placement begins,
 and `easyeda_placement_audit.mjs` binds them to the saved/reopened PCB.
 
+`constraintBasis` is required and must be `AUTHORED_BEFORE_PLACEMENT` or
+`RECONSTRUCTED`. It records whether the record constrained the layout or was
+rebuilt afterwards. A reconstructed basis can never report
+`PLACEMENT_CLEAR_FOR_ROUTING`; it stays `UNRESOLVED` until a human confirms each
+courtyard and clearance came from its real source.
+
 ```json
 {
   "revision": "sha256:exact-design-fingerprint",
+  "constraintBasis": "AUTHORED_BEFORE_PLACEMENT",
   "routingGeometry": {
     "allowedAnglesDeg": [0, 45, 90, 135],
     "hardRightAngleJunctions": "PROHIBITED_EXCEPT_PAD_OR_VIA",
@@ -162,7 +170,8 @@ For every supported live EasyEDA pad, the placement audit must:
    side. Treat a through-hole or multilayer pad as occupying both sides.
 
 Supported live copper shapes are `RECT`/`RECTANGLE`, `ELLIPSE`/`CIRCLE`,
-`OBLONG`, and `REGULAR_POLYGON`. `POLYGON` and
+`OBLONG`/`OVAL`, and `REGULAR_POLYGON`. EasyEDA `OVAL` pads use the same
+conservative oblong converter as `OBLONG`. `POLYGON` and
 `POLYLINE_COMPLEX_POLYGON` pads remain unresolved because the current companion
 contract does not prove whether their path coordinates/arcs are board-local or
 pad-local; do not guess from coordinate magnitude. Any other or malformed shape
@@ -235,7 +244,10 @@ position and rotation:
 
 If any live pad is through-hole or multilayer, also provide a sourced
 `oppositeSideCourtyard` for solder tails, plastic, stakes, tabs, or other
-opposite-side occupancy. It may differ from the owner-side courtyard:
+opposite-side occupancy. EasyEDA layer `12` or an explicit through/multilayer
+pad type proves this condition; a positive `hole` array on a single-layer SMD
+pad is treated as hole-like metadata unless the layer/type also proves opposite-side
+copper. It may differ from the owner-side courtyard:
 
 ```json
 {
@@ -267,6 +279,31 @@ silently reuse a smaller layer shape. If the live API exposes a non-empty
 per-layer `specialPad`, the current converter keeps it unresolved even with that
 record; a future converter must flatten every layer shape and prove the maximum
 projection before the gate may clear.
+
+For explicit `POLYGON`, `POLY`, or `POLYLINE_COMPLEX_POLYGON` pads, the default
+remains `UNRESOLVED`. A board may opt in only with exact primitive-ID
+`padGeometryContracts` entries in the constraint record:
+
+```json
+{
+  "padGeometryContracts": [{
+    "primitiveId": "exact-live-pad-id",
+    "designator": "J1",
+    "padNumber": "A1B12",
+    "shape": "POLYGON",
+    "coordinates": "BOARD",
+    "evidenceArtifact": "evidence/readbacks/polygon-pad-coordinate-contract-pass1.json"
+  }]
+}
+```
+
+The evidence artifact must prove the live API path coordinates for that exact
+pad and PCB revision, such as by comparing footprint-local source coordinates to
+the saved/reopened board-coordinate API readback after the current component
+transform. This is not a general permission to infer coordinates from magnitude:
+the contract is exact-revision, exact-primitive evidence, and future moves,
+rotations, layer changes, footprint substitutions, or EasyEDA version changes
+invalidate it.
 
 For a bottom-side component, `COMPONENT_LOCAL` courtyard geometry must declare
 `"bottomSideTransform": "MIRROR_LOCAL_X_THEN_ROTATE"`; the audit mirrors local X
@@ -356,12 +393,44 @@ reason such as capacitance derating, power, voltage, thermal, tolerance, or
 availability. Never move a critical passive away from its pin or loop to make a
 cosmetic row.
 
+## Author the record for a board you did not place
+
+The contract above assumes you authored the record before placing components. A
+review or repair of an existing routed board has no such record, and the record's
+`revision` must equal the live PCB fingerprint. Read that fingerprint directly:
+
+```bash
+node scripts/audits/easyeda_placement_audit.mjs --print-fingerprint
+```
+
+This binds the open PCB, prints its `fingerprint`, and exits. It writes no
+evidence and closes no gate. Copy the value into `revision`, then author the rest
+of the record from sourced rules exactly as a pre-placement record requires.
+
+Reconstruct, do not infer. Every sourced field still needs its real source: the
+fabricator and assembler rules in force for this board, and the land pattern or
+sourced constructed courtyard for each component. Do not derive a courtyard from
+the placement you are reviewing; that turns the constraint into a description of
+the current geometry, after which the gate can only confirm itself. Where a source
+is genuinely unavailable, leave the field absent so the gate reports `UNRESOLVED`,
+and say so in the review rather than substituting a plausible number.
+
+Set `constraintBasis` to `RECONSTRUCTED` in such a record. The gate then reports
+`UNRESOLVED` rather than clear, because a record rebuilt from the board it judges
+cannot by itself prove the placement. Report that state as the review finding and
+name what a human must confirm. Do not relabel the basis to clear the gate.
+
+A retroactive record proves the placement against sourced rules. It does not prove
+those were the rules used during the original design. Prefer the user's original
+record whenever they can supply it, and rerun the fingerprint only to confirm the
+geometry has not moved since.
+
 ## Run the placement gate
 
 First create the exact-revision constraint consistency report:
 
 ```bash
-python3 scripts/easyeda_constraint_lint.py \
+python3 scripts/lints/easyeda_constraint_lint.py \
   --record path/to/layout-constraints.json \
   --output path/to/evidence/audits/constraint-consistency.json
 ```
@@ -369,7 +438,7 @@ python3 scripts/easyeda_constraint_lint.py \
 After placement, save, switch away, reopen the PCB, and run:
 
 ```bash
-node scripts/easyeda_placement_audit.mjs \
+node scripts/audits/easyeda_placement_audit.mjs \
   --layout-constraints path/to/layout-constraints.json \
   --constraint-report path/to/evidence/audits/constraint-consistency.json \
   --output path/to/evidence/audits/placement-closure.json
@@ -403,7 +472,7 @@ always invalidated by the move.
 Supply the current report to the final baseline audit:
 
 ```bash
-node scripts/easyeda_design_audit.mjs \
+node scripts/audits/easyeda_design_audit.mjs \
   --placement-audit-report path/to/evidence/audits/placement-closure.json \
   --output path/to/evidence/audits/design-audit.json
 ```

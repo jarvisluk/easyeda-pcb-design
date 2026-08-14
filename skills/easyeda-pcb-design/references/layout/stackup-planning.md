@@ -258,7 +258,7 @@ override.
 Store the full comparison in `stackup-candidates.json` and validate it with:
 
 ```bash
-python3 scripts/easyeda_stackup_decision_lint.py \
+python3 scripts/lints/easyeda_stackup_decision_lint.py \
   --record path/to/stackup-candidates.json \
   --output path/to/evidence/audits/stackup-decision-consistency.json
 ```

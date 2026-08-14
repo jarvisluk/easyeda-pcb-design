@@ -32,8 +32,8 @@ import {
   resolveSafeOutputPath,
   resolveWindow,
   validateNetlistCompareExceptionArtifact,
-} from "./audit_common.mjs";
-import { validateComponentEvidenceRecord } from "./component_selection_evidence.mjs";
+} from "../lib/audit_common.mjs";
+import { validateComponentEvidenceRecord } from "../lints/component_selection_evidence.mjs";
 
 const DECISIONS = DECISION_VALUES;
 // The bridge execution sandbox does not expose enum globals. These values are
@@ -46,7 +46,7 @@ const DOCUMENT_TYPE = Object.freeze({
 
 function usage() {
   return `Usage:
-  node easyeda_design_audit.mjs [options]
+  node scripts/audits/easyeda_design_audit.mjs [options]
 
 Options:
   --ground-net NET                  Ground/reference net (default: GND)
@@ -58,6 +58,13 @@ Options:
   --exception-note TEXT             Required with any --allow-* flag
   --crystal-audit-report FILE       Clear crystal/clock net hints using its audit JSON
   --component-evidence FILE         Revision-bound component-selection evidence JSON
+  --gate-ledger FILE                Cleared easyeda_gate_ledger.mjs report for this
+                                      transaction; a missing or non-cleared ledger
+                                      keeps the result UNVERIFIED FOR FABRICATION
+  --schematic-page-envelope FILE    Declared drawable page area for this exact
+                                      schematic page; without it, symbols drawn
+                                      outside the page cannot be detected and the
+                                      result stays UNVERIFIED FOR FABRICATION
   --placement-audit-report FILE    Exact-revision PLACEMENT_CLEAR_FOR_ROUTING report
   --netlist-compare-report FILE     Strict schematic/PCB comparison report; may clear
                                       only a verified native Import Changes cache error
@@ -100,6 +107,10 @@ function parseArgs(argv) {
     componentEvidence: undefined,
     componentEvidenceRecord: undefined,
     componentEvidenceBaseDir: undefined,
+    gateLedger: undefined,
+    gateLedgerRecord: undefined,
+    schematicPageEnvelope: undefined,
+    schematicPageEnvelopeRecord: undefined,
     placementAuditReport: undefined,
     placementAuditRecord: undefined,
     netlistCompareReport: undefined,
@@ -143,6 +154,12 @@ function parseArgs(argv) {
     }
     else if (option === "--component-evidence") {
       options.componentEvidence = next();
+    }
+    else if (option === "--gate-ledger") {
+      options.gateLedger = next();
+    }
+    else if (option === "--schematic-page-envelope") {
+      options.schematicPageEnvelope = next();
     }
     else if (option === "--placement-audit-report") {
       options.placementAuditReport = next();
@@ -295,6 +312,162 @@ async function loadComponentEvidenceRecord(options) {
     ...options,
     componentEvidenceRecord: record,
     componentEvidenceBaseDir: path.dirname(recordPath),
+  };
+}
+
+async function loadGateLedgerReport(options) {
+  if (!options.gateLedger) return options;
+  const reportPath = path.resolve(options.gateLedger);
+  let report;
+  try {
+    report = JSON.parse(await readFile(reportPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `unable to read gate ledger report ${options.gateLedger}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    throw new Error("gate ledger report must be a JSON object");
+  }
+  return { ...options, gateLedgerRecord: report, gateLedger: reportPath };
+}
+
+/**
+ * Bind the gate ledger to this exact project. The ledger proves that the
+ * transaction's gates were closed in order against existing evidence; it does
+ * not replace any individual gate's own artifact.
+ */
+function gateLedgerClearance(report, expected = {}) {
+  if (!report) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "no gate ledger report supplied",
+    };
+  }
+  if (report.kind !== "easyeda-gate-ledger" || report.fabricationRelease !== false) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "gate ledger report kind or fabrication-release boundary is invalid",
+    };
+  }
+  const analysis = report.analysis;
+  if (
+    report.schemaVersion !== 1 ||
+    !analysis ||
+    typeof analysis !== "object" ||
+    !Array.isArray(analysis.blocked) ||
+    !Array.isArray(analysis.unverified) ||
+    !Array.isArray(analysis.gates)
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: "gate ledger report omits complete schema 1 analysis evidence",
+    };
+  }
+  if (
+    nonemptyString(expected.projectUuid) &&
+    analysis.projectUuid !== expected.projectUuid
+  ) {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: `gate ledger project UUID mismatch (${analysis.projectUuid || "missing"})`,
+    };
+  }
+  if (report.decision === "BLOCKED" || analysis.blocked.length) {
+    return {
+      cleared: false,
+      blocking: true,
+      reason: "gate ledger reports a skipped, out-of-order, or unevidenced gate",
+      failures: analysis.blocked,
+    };
+  }
+  if (report.decision !== "CLEARED") {
+    return {
+      cleared: false,
+      blocking: false,
+      reason: `gate ledger decision is ${report.decision || "missing"}`,
+    };
+  }
+  // Integrity is only half the question. A ledger can be perfectly honest
+  // bookkeeping for a slice that stopped early, and that must not read as
+  // closure here. The completion axis is what separates the two, so a partial
+  // ledger keeps the audit UNVERIFIED instead of letting clean upstream checks
+  // imply a finished design.
+  const completion = analysis.completion || report.completion;
+  const completionAnalysis = analysis.completionAnalysis;
+  // A report predating the completion axis cannot show that its slice finished.
+  // Treat the absent field as unproven rather than as permission, so a stale
+  // artifact cannot silently bypass this check.
+  if (!nonemptyString(completion)) {
+    return {
+      cleared: false,
+      blocking: false,
+      completion: null,
+      reason:
+        "gate ledger report omits the completion axis; regenerate it with the " +
+        "current easyeda_gate_ledger.mjs so slice completion is provable",
+    };
+  }
+  if (completion === "INCOMPLETE" || completion === "INDETERMINATE") {
+    const remaining = Array.isArray(completionAnalysis?.remainingGates)
+      ? completionAnalysis.remainingGates
+      : [];
+    const detail = remaining.length
+      ? `; unsettled gates: ${remaining.join(", ")}`
+      : "";
+    return {
+      cleared: false,
+      blocking: false,
+      completion,
+      reason:
+        `gate ledger bookkeeping is honest but the declared ${analysis.branch} slice ` +
+        `at scope ${analysis.scope} has not reached its terminal gate ` +
+        `${completionAnalysis?.terminalGate || "(undeclared)"}${detail}`,
+      remainingGates: remaining,
+    };
+  }
+  // TERMINAL_PENDING is the expected state while producing this very report: the
+  // terminal gate's evidence is the audit output that does not exist yet.
+  return {
+    cleared: true,
+    blocking: false,
+    completion: completion || null,
+    reason:
+      `gate ledger cleared for branch ${analysis.branch} at scope ${analysis.scope}` +
+      (completion === "TERMINAL_PENDING"
+        ? `, pending only its terminal gate ${completionAnalysis?.terminalGate || ""}`
+        : ""),
+    branch: analysis.branch || null,
+    scope: analysis.scope || null,
+  };
+}
+
+async function loadSchematicPageEnvelope(options) {
+  if (!options.schematicPageEnvelope) return options;
+  const recordPath = path.resolve(options.schematicPageEnvelope);
+  let record;
+  try {
+    record = JSON.parse(await readFile(recordPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `unable to read schematic page envelope ${options.schematicPageEnvelope}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return {
+    ...options,
+    schematicPageEnvelope: recordPath,
+    schematicPageEnvelopeRecord: validateSchematicPageEnvelope(
+      record,
+      recordPath,
+    ),
   };
 }
 
@@ -462,6 +635,67 @@ const base = {
     documentType: documentInfo.documentType,
   },
 };
+const pointFrom = (x, y) => ({ x, y });
+const polygonPoints = (polygon) => {
+  if (!polygon) return [];
+  if (typeof polygon.discretize === "function") {
+    try {
+      return polygon.discretize() || [];
+    } catch {}
+  }
+  let source = null;
+  if (typeof polygon.getSource === "function") {
+    try { source = polygon.getSource(); } catch {}
+  }
+  if (!Array.isArray(source) && Array.isArray(polygon.polygon)) {
+    source = polygon.polygon;
+  }
+  if (!Array.isArray(source) || !source.length) return [];
+  if (source[0] === "R") {
+    const [, x, y, width, height, rotation = 0] = source;
+    if (![x, y, width, height, rotation].every(Number.isFinite) || rotation !== 0) return [];
+    return [
+      pointFrom(x, y),
+      pointFrom(x + width, y),
+      pointFrom(x + width, y + height),
+      pointFrom(x, y + height),
+      pointFrom(x, y),
+    ];
+  }
+  const points = [];
+  let index = 0;
+  if (Number.isFinite(source[0]) && Number.isFinite(source[1])) {
+    points.push(pointFrom(source[0], source[1]));
+    index = 2;
+  }
+  while (index < source.length) {
+    const token = source[index];
+    if (token === "L") {
+      index += 1;
+      while (
+        index + 1 < source.length
+        && Number.isFinite(source[index])
+        && Number.isFinite(source[index + 1])
+      ) {
+        points.push(pointFrom(source[index], source[index + 1]));
+        index += 2;
+      }
+      continue;
+    }
+    if (Number.isFinite(token) && Number.isFinite(source[index + 1])) {
+      points.push(pointFrom(token, source[index + 1]));
+      index += 2;
+      continue;
+    }
+    return [];
+  }
+  if (points.length > 2) {
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (first.x !== last.x || first.y !== last.y) points.push(pointFrom(first.x, first.y));
+  }
+  return points;
+};
 
 if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
   const schematicPrimitives = await eda.sch_PrimitiveComponent.getAll();
@@ -494,10 +728,18 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
     line: value(wire, "getState_Line", "line") || null,
   }));
   const drc = await eda.sch_Drc.check(true, false, true);
-  return {
-    ...base,
-    kind: "schematic",
-    components: components.map((component) => ({
+  // Symbol placement geometry. The BBox API is beta and can include the
+  // designator, value, and other attribute text, so it screens crowding and
+  // page overrun; it never proves a symbol-body collision on its own.
+  const componentData = [];
+  for (const component of components) {
+    let bbox = null;
+    try {
+      bbox = (await eda.sch_Primitive.getPrimitivesBBox([component])) || null;
+    } catch (error) {
+      bbox = null;
+    }
+    componentData.push({
       primitiveId: value(component, "getState_PrimitiveId", "primitiveId"),
       designator: value(component, "getState_Designator", "designator") || "",
       uniqueId: value(component, "getState_UniqueId", "uniqueId") || "",
@@ -511,7 +753,16 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
         value(component, "getState_SupplierId", "supplierId") || "",
       addIntoPcb: value(component, "getState_AddIntoPcb", "addIntoPcb"),
       footprint: value(component, "getState_Footprint", "footprint") || null,
-    })),
+      x: value(component, "getState_X", "x"),
+      y: value(component, "getState_Y", "y"),
+      rotation: value(component, "getState_Rotation", "rotation"),
+      bbox,
+    });
+  }
+  return {
+    ...base,
+    kind: "schematic",
+    components: componentData,
     wireCount: wires.length,
     schematicAnnotations,
     schematicWires,
@@ -569,9 +820,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
   for (const polyline of polylines) {
     const net = value(polyline, "getState_Net", "net") || "";
     const polygon = value(polyline, "getState_Polygon", "polygon");
-    const points = polygon && typeof polygon.discretize === "function"
-      ? polygon.discretize()
-      : [];
+    const points = polygonPoints(polygon);
     for (let index = 1; index < points.length; index += 1) {
       const start = points[index - 1];
       const end = points[index];
@@ -1743,6 +1992,358 @@ function analyzeSchematicPresentation(raw = {}) {
   };
 }
 
+/**
+ * Validate a hand-authored schematic page envelope.
+ *
+ * EasyEDA exposes no API for the drawing frame or sheet size: the schematic
+ * CANVAS record carries only an origin. The declared envelope is therefore the
+ * only bound this audit can check symbol placement against, and it must name
+ * its own source rather than inherit a guessed sheet constant.
+ */
+function validateSchematicPageEnvelope(record, recordPath) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("schematic page envelope must be a JSON object");
+  }
+  if (record.kind !== "easyeda-schematic-page-envelope") {
+    throw new Error(
+      'schematic page envelope requires kind "easyeda-schematic-page-envelope"',
+    );
+  }
+  if (record.schemaVersion !== 1) {
+    throw new Error("schematic page envelope requires schemaVersion 1");
+  }
+  if (record.unit !== "10mil") {
+    throw new Error(
+      'schematic page envelope requires unit "10mil" to match schematic coordinates',
+    );
+  }
+  if (!nonemptyString(record.documentUuid)) {
+    throw new Error(
+      "schematic page envelope requires the exact schematic page documentUuid",
+    );
+  }
+  if (!nonemptyString(record.source)) {
+    throw new Error(
+      "schematic page envelope requires a source naming how the drawable bound was established",
+    );
+  }
+  const envelope = record.envelope;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    throw new Error("schematic page envelope requires an envelope object");
+  }
+  for (const field of ["minX", "minY", "maxX", "maxY"]) {
+    if (!Number.isFinite(envelope[field])) {
+      throw new Error(`schematic page envelope requires a finite ${field}`);
+    }
+  }
+  if (envelope.maxX <= envelope.minX || envelope.maxY <= envelope.minY) {
+    throw new Error(
+      "schematic page envelope requires maxX > minX and maxY > minY",
+    );
+  }
+  return {
+    recordPath: recordPath || null,
+    documentUuid: record.documentUuid,
+    source: record.source,
+    unit: record.unit,
+    envelope: {
+      minX: envelope.minX,
+      minY: envelope.minY,
+      maxX: envelope.maxX,
+      maxY: envelope.maxY,
+    },
+  };
+}
+
+function schematicComponentLabel(component) {
+  return (
+    (nonemptyString(component?.designator) && component.designator) ||
+    (nonemptyString(component?.primitiveId) && component.primitiveId) ||
+    "(unidentified component)"
+  );
+}
+
+function normalizedSchematicBbox(bbox) {
+  if (!bbox || typeof bbox !== "object" || Array.isArray(bbox)) return null;
+  const { minX, minY, maxX, maxY } = bbox;
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY)
+  ) {
+    return null;
+  }
+  return {
+    minX: Math.min(minX, maxX),
+    minY: Math.min(minY, maxY),
+    maxX: Math.max(minX, maxX),
+    maxY: Math.max(minY, maxY),
+  };
+}
+
+/**
+ * Screen symbol placement geometry on a schematic page.
+ *
+ * Two defects motivate this check: symbols stacked on each other because no
+ * deliberate pose was ever assigned, and symbols drawn outside the drawable
+ * page area. Coincident poses are decidable from the API alone. Page overrun is
+ * only decidable against a declared envelope, because EasyEDA exposes no sheet
+ * or drawing-frame dimension, so an absent envelope stays unverified rather than
+ * silently passing.
+ *
+ * BBox intersections are a crowding screen only. The schematic BBox API is beta
+ * and includes designator/value text, so intersecting boxes are review evidence,
+ * never a proven symbol-body collision.
+ */
+function analyzeSchematicPlacement(raw = {}, pageEnvelopeRecord = null) {
+  const COINCIDENT_TOLERANCE = 0.5;
+  const CLUSTER_SPREAD_RATIO = 0.25;
+  const CLUSTER_MINIMUM_COMPONENTS = 8;
+  const components = raw.components || [];
+  const componentCount = components.length;
+  const positioned = components.filter(
+    (component) =>
+      Number.isFinite(component?.x) && Number.isFinite(component?.y),
+  );
+  const missingPositionDesignators = components
+    .filter(
+      (component) =>
+        !Number.isFinite(component?.x) || !Number.isFinite(component?.y),
+    )
+    .map(schematicComponentLabel);
+  const unresolvedBboxDesignators = components
+    .filter((component) => !normalizedSchematicBbox(component?.bbox))
+    .map(schematicComponentLabel);
+
+  if (!componentCount) {
+    return {
+      status: "UNVERIFIED",
+      available: false,
+      blocking: false,
+      requiresVisualReview: true,
+      observations: [],
+      unresolved: ["schematic page has no part symbols to screen for placement"],
+      coincidentPoseGroups: [],
+      bboxOverlaps: [],
+      envelopeViolations: [],
+      missingPositionDesignators,
+      unresolvedBboxDesignators,
+      pageEnvelope: null,
+      metrics: { componentCount: 0, positionedComponentCount: 0 },
+      limitations: [],
+    };
+  }
+
+  const unresolved = [];
+  if (missingPositionDesignators.length) {
+    unresolved.push(
+      `schematic symbol coordinates are missing or non-finite for ${missingPositionDesignators.length} component(s)`,
+    );
+  }
+  if (unresolvedBboxDesignators.length) {
+    unresolved.push(
+      `schematic symbol BBox readback is unavailable for ${unresolvedBboxDesignators.length} component(s), so their crowding and page containment stay unscreened`,
+    );
+  }
+
+  // Coincident poses are the literal signature of symbols created without a
+  // deliberate position. No sourced dimension is needed to call this a defect.
+  const poseGroups = new Map();
+  for (const component of positioned) {
+    const key = `${Math.round(component.x / COINCIDENT_TOLERANCE)}:${Math.round(
+      component.y / COINCIDENT_TOLERANCE,
+    )}`;
+    if (!poseGroups.has(key)) poseGroups.set(key, []);
+    poseGroups.get(key).push(component);
+  }
+  const coincidentPoseGroups = [...poseGroups.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => ({
+      x: group[0].x,
+      y: group[0].y,
+      designators: group.map(schematicComponentLabel),
+      primitiveIds: group.map((component) => component.primitiveId || null),
+    }));
+
+  const boxed = positioned
+    .map((component) => ({
+      component,
+      bbox: normalizedSchematicBbox(component.bbox),
+    }))
+    .filter((item) => item.bbox);
+  const bboxOverlaps = [];
+  for (let first = 0; first < boxed.length; first += 1) {
+    for (let second = first + 1; second < boxed.length; second += 1) {
+      const a = boxed[first].bbox;
+      const b = boxed[second].bbox;
+      if (a.minX >= b.maxX || b.minX >= a.maxX) continue;
+      if (a.minY >= b.maxY || b.minY >= a.maxY) continue;
+      bboxOverlaps.push({
+        designators: [
+          schematicComponentLabel(boxed[first].component),
+          schematicComponentLabel(boxed[second].component),
+        ],
+        overlapWidth: Number(
+          (Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX)).toFixed(4),
+        ),
+        overlapHeight: Number(
+          (Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY)).toFixed(4),
+        ),
+      });
+    }
+  }
+
+  const occupiedBounds = positioned.length
+    ? {
+        minX: Math.min(...positioned.map((component) => component.x)),
+        minY: Math.min(...positioned.map((component) => component.y)),
+        maxX: Math.max(...positioned.map((component) => component.x)),
+        maxY: Math.max(...positioned.map((component) => component.y)),
+      }
+    : null;
+
+  const envelopeViolations = [];
+  let pageEnvelope = null;
+  if (pageEnvelopeRecord) {
+    const stale =
+      nonemptyString(raw.document?.uuid) &&
+      pageEnvelopeRecord.documentUuid !== raw.document.uuid;
+    pageEnvelope = {
+      documentUuid: pageEnvelopeRecord.documentUuid,
+      source: pageEnvelopeRecord.source,
+      envelope: pageEnvelopeRecord.envelope,
+      boundToActiveDocument: !stale,
+    };
+    if (stale) {
+      unresolved.push(
+        `schematic page envelope names document ${pageEnvelopeRecord.documentUuid}, not the active page ${raw.document.uuid}`,
+      );
+    } else {
+      const bound = pageEnvelopeRecord.envelope;
+      for (const component of positioned) {
+        const originOutside =
+          component.x < bound.minX ||
+          component.x > bound.maxX ||
+          component.y < bound.minY ||
+          component.y > bound.maxY;
+        const bbox = normalizedSchematicBbox(component.bbox);
+        const extentOutside = bbox
+          ? bbox.minX < bound.minX ||
+            bbox.maxX > bound.maxX ||
+            bbox.minY < bound.minY ||
+            bbox.maxY > bound.maxY
+          : false;
+        if (!originOutside && !extentOutside) continue;
+        envelopeViolations.push({
+          designator: schematicComponentLabel(component),
+          primitiveId: component.primitiveId || null,
+          originOutside,
+          extentOutside,
+          x: component.x,
+          y: component.y,
+          bbox: bbox || null,
+        });
+      }
+    }
+  } else {
+    unresolved.push(
+      "no schematic page envelope was declared, so symbols drawn outside the drawable page area cannot be detected",
+    );
+  }
+
+  const observations = [];
+  if (coincidentPoseGroups.length) {
+    observations.push(
+      `${coincidentPoseGroups.length} group(s) of part symbols share one coordinate, so those symbols are stacked rather than placed`,
+    );
+  }
+  if (envelopeViolations.length) {
+    observations.push(
+      `${envelopeViolations.length} part symbol(s) lie outside the declared drawable page area`,
+    );
+  }
+  if (bboxOverlaps.length) {
+    observations.push(
+      `${bboxOverlaps.length} symbol BBox pair(s) intersect; confirm the symbols and their designator/value text stay separable by eye`,
+    );
+  }
+
+  // Envelope-relative spread. A page whose symbols occupy a small corner of the
+  // declared drawable area is the crowded-cluster case even when no two boxes
+  // intersect. This is a screen ratio, not a sourced spacing requirement.
+  let clusteredIntoCorner = false;
+  let spreadRatioX = null;
+  let spreadRatioY = null;
+  if (
+    pageEnvelope?.boundToActiveDocument &&
+    occupiedBounds &&
+    positioned.length >= CLUSTER_MINIMUM_COMPONENTS
+  ) {
+    const bound = pageEnvelope.envelope;
+    spreadRatioX =
+      (occupiedBounds.maxX - occupiedBounds.minX) / (bound.maxX - bound.minX);
+    spreadRatioY =
+      (occupiedBounds.maxY - occupiedBounds.minY) / (bound.maxY - bound.minY);
+    clusteredIntoCorner =
+      spreadRatioX <= CLUSTER_SPREAD_RATIO &&
+      spreadRatioY <= CLUSTER_SPREAD_RATIO;
+    if (clusteredIntoCorner) {
+      observations.push(
+        `${positioned.length} part symbols occupy ${(spreadRatioX * 100).toFixed(1)}% by ${(spreadRatioY * 100).toFixed(1)}% of the declared drawable page area; the page is crowded into one region instead of partitioned into functional blocks`,
+      );
+    }
+  }
+
+  const blocking =
+    coincidentPoseGroups.length > 0 || envelopeViolations.length > 0;
+  const requiresVisualReview =
+    blocking || bboxOverlaps.length > 0 || clusteredIntoCorner;
+  const status = blocking
+    ? "DEGRADED_SYMBOL_PLACEMENT"
+    : unresolved.length
+      ? "UNVERIFIED"
+      : requiresVisualReview
+        ? "REVIEW_REQUIRED"
+        : "CLEAR";
+
+  return {
+    status,
+    available: true,
+    blocking,
+    requiresVisualReview,
+    observations,
+    unresolved,
+    coincidentPoseGroups,
+    bboxOverlaps,
+    envelopeViolations,
+    missingPositionDesignators,
+    unresolvedBboxDesignators,
+    pageEnvelope,
+    metrics: {
+      componentCount,
+      positionedComponentCount: positioned.length,
+      bboxComponentCount: boxed.length,
+      coincidentPoseGroupCount: coincidentPoseGroups.length,
+      bboxOverlapPairCount: bboxOverlaps.length,
+      envelopeViolationCount: envelopeViolations.length,
+      occupiedBounds,
+      spreadRatioX,
+      spreadRatioY,
+      clusteredIntoCorner,
+      schematicUnit: "10mil",
+      coincidentToleranceUnits: COINCIDENT_TOLERANCE,
+      clusterSpreadRatioThreshold: CLUSTER_SPREAD_RATIO,
+      clusterMinimumComponents: CLUSTER_MINIMUM_COMPONENTS,
+    },
+    limitations: [
+      "EasyEDA exposes no drawing-frame or sheet-size API, so page containment is judged only against the declared envelope and its stated source.",
+      "The schematic BBox API is beta and can include designator, value, and other attribute text, so a BBox intersection is a crowding screen rather than a proven symbol-body collision.",
+      "Coordinate spread does not prove a readable functional partition; exact-page visual review still owns that conclusion.",
+    ],
+  };
+}
+
 function analyzeSchematic(raw, source, options = {}) {
   const drc = summarizeDrc(raw.drc);
   const designators = designatorIssues(raw.components || []);
@@ -1772,6 +2373,23 @@ function analyzeSchematic(raw, source, options = {}) {
       "schematic presentation is dominated by label/stub fragments and lacks readable functional wiring",
     );
   }
+  // Symbol placement is a separate presentation axis from wiring. Stacked
+  // symbols and page overrun survive a clean wiring screen, and a readable
+  // wiring pattern does not prove either one is absent.
+  const symbolPlacement = analyzeSchematicPlacement(
+    raw,
+    options.schematicPageEnvelopeRecord || null,
+  );
+  if (symbolPlacement.coincidentPoseGroups.length) {
+    failures.push(
+      "schematic part symbols share coordinates instead of holding deliberate poses",
+    );
+  }
+  if (symbolPlacement.envelopeViolations.length) {
+    failures.push(
+      "schematic part symbols lie outside the declared drawable page area",
+    );
+  }
   const unverified = [...componentSelectionEvidence.unverified];
   if (!presentation.available) {
     unverified.push(
@@ -1782,6 +2400,26 @@ function analyzeSchematic(raw, source, options = {}) {
       "schematic presentation requires visual review before handoff",
     );
   }
+  unverified.push(...symbolPlacement.unresolved);
+  if (symbolPlacement.requiresVisualReview && !symbolPlacement.blocking) {
+    unverified.push(
+      "schematic symbol placement requires exact-page visual review before handoff",
+    );
+  }
+  const testSource = /^(?:test|self-test)/.test(source?.kind || "");
+  const gateLedgerClearanceResult =
+    testSource && !options.gateLedgerRecord
+      ? { cleared: true, blocking: false, reason: "unit-test fixture bypass" }
+      : gateLedgerClearance(options.gateLedgerRecord, {
+          projectUuid: raw.project?.uuid,
+        });
+  if (gateLedgerClearanceResult.blocking) {
+    failures.push(`gate ledger is blocked: ${gateLedgerClearanceResult.reason}`);
+  } else if (!gateLedgerClearanceResult.cleared) {
+    unverified.push(
+      `live gate-sequence evidence is missing: ${gateLedgerClearanceResult.reason}`,
+    );
+  }
 
   const warnings = [];
   if (drc.warningCount) {
@@ -1790,6 +2428,7 @@ function analyzeSchematic(raw, source, options = {}) {
     );
   }
   warnings.push(...presentation.observations);
+  warnings.push(...symbolPlacement.observations);
 
   return {
     schemaVersion: 5,
@@ -1818,6 +2457,8 @@ function analyzeSchematic(raw, source, options = {}) {
       missingFootprints,
       componentSelectionEvidence,
       presentation,
+      symbolPlacement,
+      gateLedgerClearance: gateLedgerClearanceResult,
     },
     failures,
     unverified,
@@ -1826,6 +2467,7 @@ function analyzeSchematic(raw, source, options = {}) {
       "A cleared component-selection evidence record proves traceability and exact metadata binding, not circuit correctness.",
       "DRC and metadata do not prove the circuit topology, derived values, ratings margin, pin mapping, or connector mating view.",
       "Presentation geometry screening does not replace exact-page visual review or justify drawing a literal power/ground loop.",
+      "Symbol placement screening detects stacked poses, declared-page overrun, and crowding; it does not prove a readable functional partition, and EasyEDA exposes no sheet-size API to check a real drawing frame.",
       "Power integrity, protection, reset/boot states, clocks, and no-connect intent require schematic review.",
       "Unrouted nets, pin-map correctness, and manufacturing outputs are outside this baseline audit.",
     ],
@@ -2038,6 +2680,23 @@ function analyzePcb(raw, options, source) {
       `placement/assembly closure is bound to the current PCB: ${options.placementAuditReport}`,
     );
   }
+  const gateLedgerClearanceResult =
+    testSource && !options.gateLedgerRecord
+      ? { cleared: true, blocking: false, reason: "unit-test fixture bypass" }
+      : gateLedgerClearance(options.gateLedgerRecord, {
+          projectUuid: raw.project?.uuid,
+        });
+  if (gateLedgerClearanceResult.blocking) {
+    failures.push(`gate ledger is blocked: ${gateLedgerClearanceResult.reason}`);
+  } else if (!gateLedgerClearanceResult.cleared) {
+    unverified.push(
+      `live gate-sequence evidence is missing: ${gateLedgerClearanceResult.reason}`,
+    );
+  } else if (!testSource) {
+    warnings.push(
+      `gate ledger is bound to the current project: ${options.gateLedger}`,
+    );
+  }
   if (hintedCrystalNets.length && !crystalClearance.cleared) {
     unverified.push(
       `possible crystal/clock nets detected (${hintedCrystalNets.join(
@@ -2118,6 +2777,7 @@ function analyzePcb(raw, options, source) {
       highSpeedAuditReport: options.highSpeedAuditReport || null,
       netlistCompareReport: options.netlistCompareReport || null,
       placementAuditReport: options.placementAuditReport || null,
+      gateLedgerReport: options.gateLedger || null,
       nativeNetlistCacheException: options.nativeNetlistCacheException || null,
       drcRuleBinding: {
         captured: drc.ruleBinding.captured,
@@ -2141,6 +2801,7 @@ function analyzePcb(raw, options, source) {
       highSpeedDiscovery: highSpeedDiscoveryResult,
       highSpeedClearance,
       placementClearance,
+      gateLedgerClearance: gateLedgerClearanceResult,
       manufacturing,
       unverified,
       outline: {
@@ -2254,12 +2915,29 @@ function pcbFixture() {
   });
 }
 
+function schematicPageEnvelopeFixture() {
+  return validateSchematicPageEnvelope(
+    {
+      kind: "easyeda-schematic-page-envelope",
+      schemaVersion: 1,
+      unit: "10mil",
+      documentUuid: "sch",
+      source: "self-test fixture drawable page area",
+      envelope: { minX: 0, minY: 0, maxX: 1000, maxY: 800 },
+    },
+    null,
+  );
+}
+
 function schematicFixture() {
   const schematicWires = Array.from({ length: 12 }, (_, index) => ({
     primitiveId: `wire-${index + 1}`,
     net: index % 2 ? "GND" : "+3V3",
     line: [0, index * 20, 40, index * 20, 40, index * 20 + 20],
   }));
+  // One deliberately posed symbol with a bounded extent, so the placement screen
+  // has a CLEAR baseline without adding a second part that would need its own
+  // component-selection evidence.
   return {
     kind: "schematic",
     project: { uuid: "self-test", name: "Self Test" },
@@ -2271,6 +2949,10 @@ function schematicFixture() {
         name: "MCU",
         addIntoPcb: true,
         footprint: { libraryUuid: "lib", uuid: "fp", name: "LQFP48" },
+        x: 200,
+        y: 200,
+        rotation: 0,
+        bbox: { minX: 160, minY: 160, maxX: 240, maxY: 240 },
       },
     ],
     wireCount: schematicWires.length,
@@ -2282,16 +2964,29 @@ function schematicFixture() {
 
 async function main() {
   try {
-    const options = await loadPlacementAuditReport(
-      await loadComponentEvidenceRecord(
-        await loadNetlistCompareReport(
-          await loadHighSpeedConstraintRecord(parseArgs(process.argv.slice(2))),
+    const options = await loadSchematicPageEnvelope(
+      await loadGateLedgerReport(
+        await loadPlacementAuditReport(
+          await loadComponentEvidenceRecord(
+            await loadNetlistCompareReport(
+              await loadHighSpeedConstraintRecord(
+                parseArgs(process.argv.slice(2)),
+              ),
+            ),
+          ),
         ),
       ),
     );
     if (options.selfTest) {
       const pcb = analyze(pcbFixture(), options, { kind: "self-test" });
-      const schematic = analyze(schematicFixture(), options, { kind: "self-test" });
+      const schematicOptions = {
+        ...options,
+        schematicPageEnvelopeRecord:
+          options.schematicPageEnvelopeRecord || schematicPageEnvelopeFixture(),
+      };
+      const schematic = analyze(schematicFixture(), schematicOptions, {
+        kind: "self-test",
+      });
       const failingPcbFixture = pcbFixture();
       failingPcbFixture.lines.push({
         primitiveId: "bad-angle",
@@ -2304,6 +2999,35 @@ async function main() {
       });
       const failingSchematicFixture = schematicFixture();
       failingSchematicFixture.components[0].footprint = null;
+      // Stacked symbols plus one symbol drawn past the declared page bound: the
+      // two blocking placement signatures this screen exists for.
+      const failingPlacementFixture = schematicFixture();
+      failingPlacementFixture.components.push(
+        {
+          // Same pose as U1: the stacked-symbol signature.
+          primitiveId: "c1",
+          designator: "C1",
+          name: "100nF",
+          addIntoPcb: true,
+          footprint: { libraryUuid: "lib", uuid: "fp-c", name: "C0402" },
+          x: failingPlacementFixture.components[0].x,
+          y: failingPlacementFixture.components[0].y,
+          rotation: 0,
+          bbox: { ...failingPlacementFixture.components[0].bbox },
+        },
+        {
+          // Past the declared drawable page bound.
+          primitiveId: "r1",
+          designator: "R1",
+          name: "10k",
+          addIntoPcb: true,
+          footprint: { libraryUuid: "lib", uuid: "fp-r", name: "R0402" },
+          x: 1400,
+          y: 600,
+          rotation: 0,
+          bbox: { minX: 1380, minY: 580, maxX: 1420, maxY: 620 },
+        },
+      );
       const cycleFixture = pcbFixture();
       cycleFixture.lines.push(
         {
@@ -2349,9 +3073,14 @@ async function main() {
       const cyclePcb = analyze(cycleFixture, options, {
         kind: "self-test-cycle-negative",
       });
-      const failingSchematic = analyze(failingSchematicFixture, options, {
+      const failingSchematic = analyze(failingSchematicFixture, schematicOptions, {
         kind: "self-test-negative",
       });
+      const failingPlacement = analyze(
+        failingPlacementFixture,
+        schematicOptions,
+        { kind: "self-test-placement-negative" },
+      );
       const hsHintFixture = pcbFixture();
       hsHintFixture.lines.push({
         primitiveId: "usb3",
@@ -2370,6 +3099,14 @@ async function main() {
         cyclePcb.decision !== DECISIONS.FAIL ||
         cyclePcb.checks.routingTopology.unexpectedCycles[0] !== "SIGNAL" ||
         failingSchematic.decision !== DECISIONS.FAIL ||
+        schematic.checks.symbolPlacement.status !== "CLEAR" ||
+        failingPlacement.decision !== DECISIONS.FAIL ||
+        failingPlacement.checks.symbolPlacement.status !==
+          "DEGRADED_SYMBOL_PLACEMENT" ||
+        failingPlacement.checks.symbolPlacement.coincidentPoseGroups.length !==
+          1 ||
+        failingPlacement.checks.symbolPlacement.envelopeViolations.length !==
+          1 ||
         pcb.fabricationRelease !== false ||
         hsHint.decision !== DECISIONS.UNVERIFIED ||
         !hsHint.checks.hintedHighSpeedNets.includes("USB3_SSRX_P")
@@ -2386,6 +3123,9 @@ async function main() {
               cyclePcbDecision: cyclePcb.decision,
               cycleNets: cyclePcb.checks.routingTopology.unexpectedCycles,
               schematicDecision: failingSchematic.decision,
+              schematicPlacementDecision: failingPlacement.decision,
+              schematicPlacementStatus:
+                failingPlacement.checks.symbolPlacement.status,
             },
             highSpeedHint: {
               nets: hsHint.checks.hintedHighSpeedNets,
@@ -2440,23 +3180,29 @@ export {
   analyzePcb,
   analyzeRoutingTopology,
   analyzeSchematic,
+  analyzeSchematicPlacement,
   analyzeSchematicPresentation,
   applyDecisionExitCode,
   bindPcbDrcEvidence,
   canonicalDrcLeaves,
   collectorCode,
   drcRuleBinding,
+  gateLedgerClearance,
+  loadGateLedgerReport,
   loadHighSpeedConstraintRecord,
   loadNetlistCompareReport,
   loadComponentEvidenceRecord,
   loadPlacementAuditReport,
+  loadSchematicPageEnvelope,
   placementAuditClearance,
   parseArgs,
   pcbFixture,
   resolveWindow,
   schematicFixture,
+  schematicPageEnvelopeFixture,
   summarizePcbDrcEvidence,
   validateNetlistCompareExceptionArtifact,
+  validateSchematicPageEnvelope,
 };
 
 if (

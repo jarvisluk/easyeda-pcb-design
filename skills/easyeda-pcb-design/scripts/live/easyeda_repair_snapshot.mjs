@@ -8,13 +8,13 @@ import {
   findBridge,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const PCB_DOCUMENT_TYPE = 3;
 
 function usage() {
   return `Usage:
-  node scripts/easyeda_repair_snapshot.mjs --output FILE [options]
+  node scripts/live/easyeda_repair_snapshot.mjs --output FILE [options]
 
 Options:
   --bridge-port PORT  Use one bridge port instead of scanning
@@ -168,8 +168,8 @@ return {
   },
   limitations: [
     "This JSON is semantic audit and inverse-transaction evidence, not a restorable EasyEDA document backup.",
-    "Authorization comes from the selected project profile; this capture does not grant it.",
-    "When exact source Pour definitions remain, this capture can support bounded derived-fill regeneration evidence under AI_DEDICATED.",
+    "Authorization to act comes from the user; this capture does not grant it.",
+    "When exact source Pour definitions remain, this capture can support bounded derived-fill regeneration evidence.",
     "It cannot by itself close rollback for deletion of source primitives or the only recoverable project revision.",
     "Primitive restoration remains API- and version-dependent even when affected geometry is recorded.",
   ],

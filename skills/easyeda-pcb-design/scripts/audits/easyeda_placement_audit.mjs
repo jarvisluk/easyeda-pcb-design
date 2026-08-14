@@ -12,9 +12,9 @@ import {
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 import { collectorCode } from "./easyeda_design_audit.mjs";
-import { analyzePlacementGeometry } from "./placement_geometry.mjs";
+import { analyzePlacementGeometry } from "../lib/placement_geometry.mjs";
 
 const STATUS = Object.freeze({
   CLEAR: "PLACEMENT_CLEAR_FOR_ROUTING",
@@ -33,12 +33,18 @@ const EXIT = Object.freeze({
 
 function usage() {
   return `Usage:
-  node easyeda_placement_audit.mjs --layout-constraints FILE \\
+  node scripts/audits/easyeda_placement_audit.mjs --layout-constraints FILE \\
     --constraint-report FILE --output FILE [options]
+
+  node scripts/audits/easyeda_placement_audit.mjs --print-fingerprint
 
 Options:
   --layout-constraints FILE   Exact-revision layout-constraints.json
   --constraint-report FILE    CLEARED_FOR_PLACEMENT constraint-lint report
+  --print-fingerprint         Read the bound PCB and print its design
+                              fingerprint, then exit; authors no evidence and
+                              needs no constraint inputs. Use it to set the
+                              layout-constraints revision on an existing board.
   --bridge-port PORT          Use one port instead of scanning 49620-49629
   --window-id ID              Target a registered EasyEDA window
   --output FILE               New relative JSON evidence path under cwd
@@ -47,7 +53,8 @@ Options:
   --help                      Show this help
 
 Exit codes: 0=PLACEMENT_CLEAR_FOR_ROUTING, 1=tool error, 2=BLOCKED,
-3=UNRESOLVED, 4=STALE. No status authorizes fabrication or ordering.
+3=UNRESOLVED, 4=STALE. --print-fingerprint exits 0 on success. No status
+authorizes fabrication or ordering.
 `;
 }
 
@@ -68,6 +75,7 @@ function parseArgs(argv) {
     output: undefined,
     force: false,
     selfTest: false,
+    printFingerprint: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
@@ -83,6 +91,7 @@ function parseArgs(argv) {
     else if (option === "--output") options.output = next();
     else if (option === "--force") options.force = true;
     else if (option === "--self-test") options.selfTest = true;
+    else if (option === "--print-fingerprint") options.printFingerprint = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(usage());
       process.exit(0);
@@ -90,7 +99,26 @@ function parseArgs(argv) {
       throw new Error(`unknown option: ${option}`);
     }
   }
-  if (!options.selfTest) {
+  // --print-fingerprint is a read-only lookup, not an audit, so it must not
+  // demand the very constraint record whose revision it exists to supply.
+  if (options.printFingerprint) {
+    // Reject flags this mode ignores. Silently accepting --output or --force
+    // would let a caller believe they had written evidence that never exists.
+    for (const [field, option] of [
+      [options.selfTest, "--self-test"],
+      [options.output, "--output"],
+      [options.force, "--force"],
+      [options.layoutConstraints, "--layout-constraints"],
+      [options.constraintReport, "--constraint-report"],
+    ]) {
+      if (field) {
+        throw new Error(
+          `--print-fingerprint reads no evidence and writes none; remove ${option}`,
+        );
+      }
+    }
+  }
+  if (!options.selfTest && !options.printFingerprint) {
     for (const [field, option] of [
       [options.layoutConstraints, "--layout-constraints"],
       [options.constraintReport, "--constraint-report"],
@@ -260,6 +288,40 @@ function summarizeFindings(checks) {
   return { failures, unverified };
 }
 
+/**
+ * Read-only fingerprint lookup. The constraint record's `revision` must equal
+ * the live PCB fingerprint, but every audit that computes the fingerprint also
+ * requires that record, so authoring one for an already-routed board was
+ * circular. This resolves the circle and nothing else: it reads no constraint
+ * input, writes no evidence, and closes no gate.
+ */
+function designFingerprintLookup(raw) {
+  if (raw?.kind !== "pcb") {
+    throw new Error("fingerprint lookup requires an active PCB document");
+  }
+  return {
+    schemaVersion: 1,
+    kind: "easyeda-design-fingerprint",
+    fabricationRelease: false,
+    notAFabricationRelease: notAFabricationReleaseMessage(),
+    project: raw.project,
+    document: raw.document,
+    fingerprint: designFingerprint(raw),
+    componentCount: (raw.components || []).length,
+    padCount: (raw.pads || []).length,
+    viaCount: (raw.vias || []).length,
+    usage:
+      "Copy fingerprint into layout-constraints.revision. This value identifies " +
+      "the current geometry only; it is not placement, constraint, or review evidence.",
+  };
+}
+
+// A record authored before placement constrains the layout. One reconstructed
+// afterwards may instead describe it, in which case the gate can only confirm
+// itself. That difference is not decidable from geometry, so the record must
+// declare it and the report must carry it forward for the human reviewer.
+const CONSTRAINT_BASIS = Object.freeze(["AUTHORED_BEFORE_PLACEMENT", "RECONSTRUCTED"]);
+
 function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" }) {
   if (raw.kind !== "pcb") throw new Error("placement audit requires an active PCB document");
   const fingerprint = designFingerprint(raw);
@@ -269,6 +331,18 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
   if (constraintEvidence.record.revision !== fingerprint) {
     stale.push(
       `layout-constraints revision ${constraintEvidence.record.revision || "<missing>"} does not match PCB fingerprint ${fingerprint}`,
+    );
+  }
+  const declaredBasis = constraintEvidence.record.constraintBasis;
+  if (!CONSTRAINT_BASIS.includes(declaredBasis)) {
+    findings.unverified.push(
+      `layout-constraints constraintBasis must be one of ${CONSTRAINT_BASIS.join(", ")}`,
+    );
+  } else if (declaredBasis === "RECONSTRUCTED") {
+    findings.unverified.push(
+      "constraint basis was reconstructed after placement; a human must confirm " +
+        "each courtyard and clearance came from its real source rather than from " +
+        "the reviewed geometry",
     );
   }
   let status = STATUS.CLEAR;
@@ -293,6 +367,7 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
     },
     constraints: {
       revision: constraintEvidence.record.revision,
+      basis: CONSTRAINT_BASIS.includes(declaredBasis) ? declaredBasis : null,
       recordFingerprint: constraintEvidence.recordFingerprint,
       recordPath: constraintEvidence.recordPath,
       consistencyReportPath: constraintEvidence.reportPath,
@@ -394,6 +469,7 @@ function fixture() {
 function constraintFixture(raw) {
   return {
     revision: designFingerprint(raw),
+    constraintBasis: "AUTHORED_BEFORE_PLACEMENT",
     assembly: {
       foreignPadCopperClearanceMm: 0.1524,
       foreignPadCopperClearanceSource: "fabricator copper clearance rule revision 1",
@@ -678,6 +754,45 @@ function selfTest() {
     explicitPolygonPad.checks.componentPlacement.unsupportedPadOccupancy.length !== 1
   ) {
     throw new Error("explicit polygon pad without a proven coordinate contract cleared placement");
+  }
+
+  const contractedPolygonPadRaw = structuredClone(clearRaw);
+  contractedPolygonPadRaw.pads[0].pad = [
+    "POLYGON",
+    [0, -20, "L", 40, -20, 40, 20, 0, 20, 0, -20],
+  ];
+  const contractedPolygonPadRecord = constraintFixture(contractedPolygonPadRaw);
+  contractedPolygonPadRecord.padGeometryContracts = [{
+    primitiveId: "sw1-pad1",
+    designator: "SW1",
+    padNumber: "1",
+    shape: "POLYGON",
+    coordinates: "BOARD",
+    evidenceArtifact: "self-test-polygon-board-coordinate-contract.json",
+  }];
+  contractedPolygonPadRecord.revision = designFingerprint(contractedPolygonPadRaw);
+  const contractedPolygonPad = analyzePlacement(
+    contractedPolygonPadRaw,
+    evidenceFixture(contractedPolygonPadRecord),
+    { kind: "self-test" },
+  );
+  if (contractedPolygonPad.status !== STATUS.CLEAR) {
+    throw new Error("contracted board-coordinate polygon pad did not clear placement");
+  }
+
+  const ovalPadRaw = structuredClone(clearRaw);
+  ovalPadRaw.pads[0].pad = ["OVAL", 40, 60];
+  const ovalPadRecord = constraintFixture(ovalPadRaw);
+  ovalPadRecord.assemblyEnvelopes[0].courtyard.widthMil = 100;
+  ovalPadRecord.assemblyEnvelopes[0].courtyard.heightMil = 80;
+  ovalPadRecord.revision = designFingerprint(ovalPadRaw);
+  const ovalPad = analyzePlacement(
+    ovalPadRaw,
+    evidenceFixture(ovalPadRecord),
+    { kind: "self-test" },
+  );
+  if (ovalPad.status !== STATUS.CLEAR) {
+    throw new Error("EasyEDA OVAL pad did not use the deterministic oblong converter");
   }
 
   const specialPadstackRaw = structuredClone(clearRaw);
@@ -1021,6 +1136,20 @@ function selfTest() {
   if (oppositeCourtyard.status !== STATUS.CLEAR) {
     throw new Error("sourced opposite-side courtyard did not clear through-hole placement");
   }
+
+  const singleLayerHoleMetadataRaw = structuredClone(clearRaw);
+  singleLayerHoleMetadataRaw.pads[0].hole = ["ROUND", 1.4, 1.4];
+  const singleLayerHoleMetadataRecord = constraintFixture(singleLayerHoleMetadataRaw);
+  singleLayerHoleMetadataRecord.revision = designFingerprint(singleLayerHoleMetadataRaw);
+  const singleLayerHoleMetadata = analyzePlacement(
+    singleLayerHoleMetadataRaw,
+    evidenceFixture(singleLayerHoleMetadataRecord),
+    { kind: "self-test" },
+  );
+  if (singleLayerHoleMetadata.status !== STATUS.CLEAR) {
+    throw new Error("single-layer SMD pad hole-like metadata was treated as opposite-side occupancy");
+  }
+
   process.stdout.write(
     `${JSON.stringify({
       clear: clear.status,
@@ -1036,6 +1165,8 @@ function selfTest() {
       concaveCourtyardEscape: concave.status,
       selfIntersectingCourtyard: selfIntersecting.status,
       explicitPolygonPad: explicitPolygonPad.status,
+      contractedPolygonPad: contractedPolygonPad.status,
+      ovalPad: ovalPad.status,
       perLayerSpecialPad: specialPadstack.status,
       missingPadCoordinate: missingPadCoordinate.status,
       missingPadLayer: missingPadLayer.status,
@@ -1051,6 +1182,7 @@ function selfTest() {
       throughHoleMissingOppositeCourtyard: missingOpposite.status,
       throughHoleMissingProjectionEvidence: missingProjection.status,
       throughHoleWithOppositeCourtyard: oppositeCourtyard.status,
+      singleLayerHoleMetadata: singleLayerHoleMetadata.status,
     })}\n`,
   );
 }
@@ -1060,6 +1192,15 @@ async function main() {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) {
       selfTest();
+      return;
+    }
+    if (options.printFingerprint) {
+      const bridge = await findBridge(options.bridgePort);
+      const windowId = await resolveWindow(bridge, options.windowId);
+      const collected = await collectFromEasyEda(bridge, windowId);
+      process.stdout.write(
+        `${JSON.stringify(designFingerprintLookup(collected.raw), null, 2)}\n`,
+      );
       return;
     }
     const constraintEvidence = await loadConstraintEvidence(options);
@@ -1094,6 +1235,7 @@ export {
   analyzePlacement,
   collectFromEasyEda,
   constraintFixture,
+  designFingerprintLookup,
   evidenceFixture,
   exitCode,
   fixture,

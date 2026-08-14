@@ -85,7 +85,46 @@ function oblongPolygon(cx, cy, width, height, rotationDeg = 0, segments = 64) {
   return points.map((point) => rotatePoint(point, rotationDeg, { x: cx, y: cy }));
 }
 
-function padPolygon(pad) {
+function padGeometryContract(pad, constraintRecord = {}) {
+  const contracts = Array.isArray(constraintRecord.padGeometryContracts)
+    ? constraintRecord.padGeometryContracts
+    : [];
+  return contracts.find((contract) => (
+    contract?.primitiveId === pad?.primitiveId &&
+    contract?.designator === pad?.designator &&
+    String(contract?.padNumber) === String(pad?.padNumber) &&
+    contract?.coordinates === "BOARD" &&
+    typeof contract?.evidenceArtifact === "string" &&
+    contract.evidenceArtifact.trim()
+  ));
+}
+
+function explicitBoardPolygon(shape) {
+  const path = shape?.[1];
+  if (!Array.isArray(path)) return undefined;
+  const unsupportedCommand = path.some(
+    (item) => typeof item === "string" && !["L", "M", "Z"].includes(item.toUpperCase()),
+  );
+  if (unsupportedCommand) return undefined;
+  const numbers = path.filter((item) => typeof item === "number" && Number.isFinite(item));
+  if (numbers.length < 6 || numbers.length % 2 !== 0) return undefined;
+  const polygon = [];
+  for (let index = 0; index < numbers.length; index += 2) {
+    const point = { x: numbers[index], y: numbers[index + 1] };
+    const previous = polygon.at(-1);
+    if (!previous || Math.hypot(previous.x - point.x, previous.y - point.y) > EPSILON) {
+      polygon.push(point);
+    }
+  }
+  const first = polygon[0];
+  const last = polygon.at(-1);
+  if (first && last && Math.hypot(first.x - last.x, first.y - last.y) <= EPSILON) {
+    polygon.pop();
+  }
+  return validSimplePolygon(polygon) ? polygon : undefined;
+}
+
+function padPolygon(pad, constraintRecord = {}) {
   const x = finiteNumber(pad?.x);
   const y = finiteNumber(pad?.y);
   const shape = pad?.pad;
@@ -104,7 +143,7 @@ function padPolygon(pad) {
     polygon = rectanglePolygon(x, y, width, height, rotation);
   } else if (["ELLIPSE", "CIRCLE"].includes(kind)) {
     polygon = ellipsePolygon(x, y, width, height, rotation);
-  } else if (kind === "OBLONG") {
+  } else if (["OBLONG", "OVAL"].includes(kind)) {
     polygon = oblongPolygon(x, y, width, height, rotation);
   } else if (["REGULAR_POLYGON", "REGULARPOLYGON"].includes(kind)) {
     const diameter = width;
@@ -119,11 +158,22 @@ function padPolygon(pad) {
         );
       });
     }
-  } else if (["POLYGON", "POLYLINE_COMPLEX_POLYGON"].includes(kind)) {
-    return {
-      supported: false,
-      reason: "explicit polygon pad coordinates/arcs lack a proven live API transform contract",
-    };
+  } else if (["POLYGON", "POLYLINE_COMPLEX_POLYGON", "POLY"].includes(kind)) {
+    const contract = padGeometryContract(pad, constraintRecord);
+    if (contract) {
+      polygon = explicitBoardPolygon(shape);
+    } else {
+      return {
+        supported: false,
+        reason: "explicit polygon pad coordinates/arcs lack a proven live API transform contract",
+      };
+    }
+    if (!polygon) {
+      return {
+        supported: false,
+        reason: "contracted explicit polygon pad lacks a simple board-coordinate polygon path",
+      };
+    }
   }
   if (!polygon || !validSimplePolygon(polygon)) {
     return {
@@ -351,17 +401,10 @@ function pairKey(first, second) {
   return [String(first), String(second)].sort().join("::");
 }
 
-function hasPositiveNumeric(value) {
-  if (Array.isArray(value)) return value.some(hasPositiveNumeric);
-  if (value && typeof value === "object") return Object.values(value).some(hasPositiveNumeric);
-  return Number.isFinite(Number(value)) && Number(value) > 0;
-}
-
 function padSpansBothSides(pad) {
   const type = String(pad?.padType ?? "").toUpperCase();
   return (
     Number(pad?.layer) === 12 ||
-    hasPositiveNumeric(pad?.hole) ||
     type.includes("THROUGH") ||
     type.includes("THRU") ||
     type.includes("MULTI")
@@ -381,7 +424,7 @@ function oppositeCopperLayer(layer) {
   return undefined;
 }
 
-function padPolygonsByOwner(raw) {
+function padPolygonsByOwner(raw, constraintRecord = {}) {
   const converted = [];
   const unsupported = [];
   for (const pad of Array.isArray(raw.pads) ? raw.pads : []) {
@@ -403,7 +446,7 @@ function padPolygonsByOwner(raw) {
       });
       continue;
     }
-    const geometry = padPolygon(pad);
+    const geometry = padPolygon(pad, constraintRecord);
     if (!geometry.supported) {
       unsupported.push({
         designator: pad.designator || "",
@@ -521,7 +564,7 @@ function analyzeViaPadGeometry(raw, constraintRecord = {}) {
   const unsupportedViaIds = new Set(unsupportedVias.map((via) => via.primitiveId));
   const validVias = vias.filter((via) => !unsupportedViaIds.has(via.primitiveId || null));
   for (const pad of pads) {
-    const converted = padPolygon(pad);
+    const converted = padPolygon(pad, constraintRecord);
     if (!converted.supported) {
       unsupportedPads.push({
         designator: pad.designator || "",
@@ -733,7 +776,7 @@ function analyzeComponentPlacement(raw, constraintRecord = {}) {
     (candidate) => !exactPairCoverage.has(candidate.pair),
   );
 
-  const padGeometry = padPolygonsByOwner(raw);
+  const padGeometry = padPolygonsByOwner(raw, constraintRecord);
   const padPrimitiveCounts = identityCounts(
     Array.isArray(raw.pads) ? raw.pads : [],
     "primitiveId",

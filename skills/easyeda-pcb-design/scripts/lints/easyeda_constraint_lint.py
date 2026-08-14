@@ -24,6 +24,7 @@ PLACEMENT_STATES = {"FEASIBLE", "INFEASIBLE", "UNRESOLVED", "STALE"}
 DISPOSITIONS = {"FOLLOW", "PROPOSE_REVISION", "UNRESOLVED", "STALE"}
 LAYER_STATES = {"SELECTABLE", "CONDITIONAL", "INFEASIBLE", "UNRESOLVED", "STALE"}
 ENTRY_STATES = {"CLEARED_FOR_PLACEMENT", "BLOCKED", "UNRESOLVED", "STALE"}
+CONSTRAINT_BASES = {"AUTHORED_BEFORE_PLACEMENT", "RECONSTRUCTED"}
 SPECIALIZED_STATES = ENTRY_STATES | {"NOT_APPLICABLE"}
 CONFLICT_STATES = {"RESOLVED", "BLOCKED", "UNRESOLVED", "STALE"}
 HUMAN_INTERFACE_DECISIONS = {"GROUP_TOGETHER", "SEPARATE_WITH_RATIONALE"}
@@ -402,6 +403,8 @@ def validate_constraint_record(
     stale: list[str] = []
     unresolved: list[str] = []
     release_evidence_pending: list[str] = []
+
+    _enum(errors, "constraintBasis", record.get("constraintBasis"), CONSTRAINT_BASES)
 
     revision = record.get("revision")
     if not _nonempty(revision):
@@ -1295,6 +1298,7 @@ def _exit_code(report: dict[str, Any]) -> int:
 def _base_record() -> dict[str, Any]:
     return {
         "revision": "self-test-revision",
+        "constraintBasis": "AUTHORED_BEFORE_PLACEMENT",
         "pcbEntryGate": {"status": "CLEARED_FOR_PLACEMENT"},
         "placementFeasibility": {
             "status": "FEASIBLE",
@@ -1736,6 +1740,14 @@ def _self_test() -> int:
         "free-form summary"
     )
     cases.append(("malformed-demand-partition", malformed_partition, "BLOCKED", 2, False))
+
+    missing_basis = copy.deepcopy(_base_record())
+    del missing_basis["constraintBasis"]
+    cases.append(("missing-constraint-basis", missing_basis, "BLOCKED", 2, False))
+
+    invalid_basis = copy.deepcopy(_base_record())
+    invalid_basis["constraintBasis"] = "DERIVED_FROM_LAYOUT"
+    cases.append(("invalid-constraint-basis", invalid_basis, "BLOCKED", 2, False))
 
     for name, record, expected_gate, expected_code, expected_consistent in cases:
         report = validate_constraint_record(record, base_dir=None)

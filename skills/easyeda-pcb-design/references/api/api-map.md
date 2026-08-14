@@ -3,6 +3,8 @@
 ## Contents
 
 - Safety
+- Version-scoped runtime observations
+- Return values, timeouts, and commit state
 - Document and project
 - Schematic
 - Identity, synchronization, and existing-board repair
@@ -17,16 +19,77 @@ stop — do not invent signatures.
 ## Safety
 
 - Confirm project + active document before writes.
-- Apply the authorization profile selected in `SKILL.md`. `USER_OWNED` requires
-  operation-specific confirmation for destructive/bulk work; `AI_DEDICATED`
-  provides standing authorization only for project-local mutations within the
-  stated objective. Verification gates remain identical.
+- Use the selected live gate branch from `live-build-gates.md`. Ordinary
+  branch-local mutations follow that branch; destructive/bulk operations outside
+  the branch require operation-specific confirmation. Verification gates are
+  identical either way.
 - After create/modify, read back IDs and state; do not assume success from a
   void return.
 - Qualify unknown or beta write sequences in a dedicated probe project. Do not
-  use the production project as an API behavior test surface.
+  use the project holding the user's design as an API behavior test surface.
 - Manufacturing export (`PCB_ManufactureData`) only after design validation and
   with user intent to generate outputs.
+
+## Version-scoped runtime observations
+
+Every entry below is an observation bound to one EasyEDA Pro version, not a
+stable API contract. After any EasyEDA, companion, or bridge version change,
+treat each row as unqualified again and requalify it before relying on it. Where
+two versions disagree, the newer row applies to that newer version only; do not
+generalize either row into a rule.
+
+| Observed | Call | Behavior | Required response |
+|---|---|---|---|
+| 3.2.166 | `DMT_Project.createProject()` | returned `undefined` **and committed nothing**, with both an omitted team and an explicit local team path | treat a from-zero build as externally blocked; see the UI exception below |
+| 3.2.175 | `DMT_Project.createProject()` | returned `undefined`/`null` **but did commit** the project | re-enumerate; a UUID found by readback is authoritative and must not be retried |
+| 3.2.175 | `DMT_Project.getAllProjectsUuid()` | returned `[]` with no team argument while projects existed on disk | always pass the team/workspace path; an empty result never proves projects are absent |
+| 3.2.175 | `DMT_Schematic.createSchematic()` and PCB creation | returned `{}` while committing a full scaffold (Board, Schematic plus page, PCB, Panel) | read the document tree; do not retry, and do not assume the requested name was applied |
+| 3.2.175 | `DMT_EditorControl.openDocument(parentSchematicUuid)` | left `getCurrentDocumentInfo()` reporting `documentType: 0, uuid: "0"` | open a schematic **page** UUID; keep page and parent UUIDs distinct |
+| 3.2.175 | `PCB_PrimitivePour.create()` | rejected arrays, flat coordinate lists, and point-object arrays for `complexPolygon` | build an `IPCB_Polygon` through `PCB_MathPolygon.createPolygon([x1, y1, 'L', x2, y2, ...])` and pass `pourFillMethod` as a string such as `'solid'` |
+| 3.2.166 | bridge execution sandbox | did not expose documented enum globals | copy the exact named enum value into a local frozen mapping and cite the enum member |
+
+The two `createProject()` rows contradict each other on whether the call
+commits. That is the point: the return value carries no commit information in
+either version. Decide commit state only from enumeration and readback, never
+from the returned value or from whichever row you expect to apply.
+
+Two UUIDs are routinely confused and are not interchangeable:
+
+- the schematic **page** UUID is what `DMT_EditorControl.openDocument()` and
+  `--schematic-page-uuid` require;
+- the **parent schematic** UUID is what `SYS_Tool.netlistComparison()` and
+  `--schematic-uuid` require.
+
+Resolve both from the document tree before writing and record which is which.
+Enumerate projects with the explicit team path, open the intended project, read
+the document tree, then confirm the active document by
+`getCurrentDocumentInfo()` before any write.
+
+## Return values, timeouts, and commit state
+
+A return value never proves what happened to the design. Treat every write as
+having unknown commit state until semantic readback resolves it:
+
+- **Void, `{}`, `undefined`, or `null`** — may still have committed. Read back by
+  identity, net, layer, and geometry before retrying.
+- **Truthy or `true`** — does not prove the intended semantic change.
+  `importChanges()` and `setNetlist()` each returned success while changing
+  nothing.
+- **Throw after commit** — a `create()` can commit and still throw. Read back
+  first and reuse the committed primitive.
+- **Bridge timeout** — the state is **unknown**, not failed. Treat it as possibly
+  committed: read back by net, layer, geometry, and designator, then reuse or
+  repair what exists.
+
+Never replay a timed-out or void-returning write without that readback. A blind
+retry after a timeout is how duplicate components and duplicate primitives
+appear. A duplicate created this way is committed geometry, so removing it is an
+existing-board repair transaction with that branch's evidence requirements, not
+a free correction. Record every attempt, its outcome, and its readback in the
+append-only operation log defined in
+[live-build-gates.md](../workflows/live-build-gates.md), using outcome
+`UNKNOWN_TIMEOUT` for a timeout and `COMMITTED_THEN_THREW` for a throwing
+commit.
 
 ## Document and project
 
@@ -46,11 +109,6 @@ page and `PCB_Document.save()` for a PCB. `DMT_EditorControl` has no qualified
 generic save call. After saving, switch away and reopen the UUID before using
 state as committed evidence.
 
-The bridge execution sandbox in EasyEDA Pro 3.2.166 did not expose documented
-enum globals. When that happens, copy the exact named value from the matching
-companion enum reference into a local frozen mapping and cite the enum/member;
-do not guess a raw number at the call site.
-
 `DMT_Project.createProject()` is beta and is the first live gate for a
 no-design build. It cannot be qualified inside an already-created disposable
 probe project, and the companion exposes no project-deletion API. Preflight the
@@ -64,13 +122,12 @@ If no UUID appears, apply the single recorded-hypothesis retry ceiling from the
 live gates, then stop rather than falling back to an existing project, source
 import, filesystem synthesis, or unverified UI mutation.
 
-EasyEDA Pro 3.2.166 local-filesystem regression found that `createProject()`
-returned `undefined` and created no enumerated project both with omitted team
-and with the explicit local project-team path. Treat a from-zero build in that
-environment as externally blocked until the user creates the target or
-explicitly authorizes one UI creation attempt. For that exception, use the
-final name, open in a new window when the prior project may be unsaved, and
-perform no UI design edits. EasyEDA Pro 3.2.166 UI creation produced one Board,
+When the version-scoped table shows a non-committing `createProject()` and
+enumeration confirms no project was created, treat the from-zero build as
+externally blocked until the user creates the target or confirms one UI creation
+attempt. For that exception, use the final name, open in a new window when the
+prior project may be unsaved, and perform no UI design edits.
+EasyEDA Pro 3.2.166 UI creation produced one Board,
 one Schematic/page, one PCB, and one Panel. Accept that scaffold only after
 companion readback proves the schematic has no `part` components or wires and
 the PCB has no components, lines, arcs, vias, Pours/fills, or regions. Bind all
@@ -85,7 +142,7 @@ new names were not immediately reflected by `getAllBoardsInfo()` /
 the source of truth; do not assume the source Board keeps its schematic.
 
 Do not call `DMT_Board.createBoard()` without a documented argument sequence in
-a production project. EasyEDA Pro 3.2.166 beta created a complete empty Board,
+the project holding the user's design. EasyEDA Pro 3.2.166 beta created a complete empty Board,
 default schematic page, and PCB instead of an empty container. Removing the
 last schematic page later removed the empty Board asynchronously. Requalify
 these behaviors after any EasyEDA or companion version change.
@@ -100,7 +157,7 @@ source identity cache is suspect.
 `PCB_Document.importChanges()` initiates the native document-level "Import
 Changes" synchronization after an API-built PCB. It is a bulk synchronization:
 export and compare schematic/PCB netlists first, then close the applicable
-authorization-profile and rollback gates before calling it. Run it before routing whenever possible and
+high-risk-operation and rollback gates before calling it. Run it before routing whenever possible and
 read back components, unique IDs, pads, nets, placement, and DRC afterward. A
 `true` return is not proof that the native mismatch was committed: live
 regression showed zero PCB geometry changes while native DRC and
@@ -111,7 +168,7 @@ Require both a manufacturing-netlist match and a native document match.
 schematic page UUID in this workflow. Its runtime fields may be `type`,
 `object`, `net1`, and `net2`, which differ from the documented return property
 names. `null` is also possible and must be treated as unavailable, not a match.
-Use `scripts/easyeda_netlist_compare.mjs --schematic-uuid ...` to capture this
+Use `scripts/audits/easyeda_netlist_compare.mjs --schematic-uuid ...` to capture this
 read-only second view.
 
 EasyEDA Pro 3.2.166 live regression also found a document-input false negative:
@@ -128,11 +185,10 @@ result defined in `live-build-gates.md`; manufacturing equality alone remains
 insufficient.
 
 `PCB_Net.setNetlist()` is a possible API-only fallback,
-but it is a bulk netlist overwrite and requires the selected profile to cover
-the operation plus before/after semantic capture, separately verified rollback
-evidence, native comparison, and DRC readback. `USER_OWNED` requires separate
-confirmation; `AI_DEDICATED` may use standing authorization when the operation
-is necessary for the stated objective.
+but it is a bulk netlist overwrite and requires before/after semantic capture,
+separately verified rollback evidence, native comparison, and DRC readback. It
+also requires either the selected synchronization branch to require it or
+operation-specific confirmation.
 
 EasyEDA Pro 3.2.166 also returned `true` from
 `PCB_Net.setNetlist(undefined, exportedSchematicNetlist)` against a verified
@@ -143,7 +199,7 @@ the exact pre-operation PCB netlist when the declared success gate is absent,
 and treat this as the second synchronization failure rather than trying a UI
 equivalent or another bulk path.
 
-Use `scripts/easyeda_netlist_compare.mjs` for the read-only preflight; it uses
+Use `scripts/audits/easyeda_netlist_compare.mjs` for the read-only preflight; it uses
 `SCH_ManufactureData.getNetlistFile()` and
 `PCB_ManufactureData.getNetlistFile()` rather than the obsolete
 `SCH_Netlist.getNetlist()` API.
@@ -165,6 +221,22 @@ clearance, connection, or free-copper error remains a failure.
 - `SCH_Document` — save/view operations.
 
 Schematic coordinates use 10 mil per unit. Read the exact symbol/component creation signature and verify `{libraryUuid, uuid}` identifiers.
+
+Component pose is a create-time argument, not a later adjustment: repositioning a
+committed symbol is an existing-design edit with that branch's evidence
+requirements. The pose rules live in
+[schematic-presentation.md](../workflows/schematic-presentation.md).
+
+No API exposes the schematic drawing frame, sheet size, or title-block extent:
+`SCH_Primitive.getPrimitivesBBox()` bounds primitives, and the schematic `CANVAS`
+record carries only `originX`/`originY`. Page containment is therefore checked
+only against the declared envelope in
+[schematic-presentation.md](../workflows/schematic-presentation.md); do not
+substitute a guessed sheet constant. For the baseline audit, collect each part
+component's `getState_X()`, `getState_Y()`, `getState_Rotation()`, and its
+`sch_Primitive.getPrimitivesBBox([component])` result. That BBox is beta and can
+include designator, value, and other attribute text, so an intersection is a
+crowding screen, never a proven symbol-body collision.
 
 Establish component `designator` and `uniqueId` atomically through supported
 `SCH_PrimitiveComponent.create()` arguments or one complete
@@ -244,11 +316,10 @@ comparator's verified exception artifact with an ordinary identity-preflight
 bind to the same saved/reopened project, schematic page, and PCB UUID.
 
 If synchronization fails, perform semantic readback in the same document and
-test one recorded repair hypothesis. One separately authorized diagnostic PCB
-may be used when the current document's hidden identity is demonstrably
-unrepairable. If that candidate fails the same gate, stop. Do not cascade
-through copied schematics, additional Boards, `importChanges()`, and
-`setNetlist()` as unbounded retries.
+test one recorded repair hypothesis. One diagnostic PCB may be used when the
+current document's hidden identity is demonstrably unrepairable. If that
+candidate fails the same gate, stop. Do not cascade through copied schematics,
+additional Boards, `importChanges()`, and `setNetlist()` as unbounded retries.
 
 Do not apply this pre-routing construction gate retroactively to an already
 routed board when a requested repair changes only track/via geometry. In that
@@ -348,9 +419,10 @@ transaction evidence, not the final geometry authority.
   add a justified same-net connection, rebuild once, and repeat full per-fill
   readback; do not make deletion of an individual derived fill the final state.
 - For fill-only regeneration, retain and bind the exact source Pour and capture
-  its settings plus generated Poured/fill IDs. Under `AI_DEDICATED`, this
-  semantic evidence closes the pre-edit evidence requirement without a native
-  duplicate because only derived fills are removed. Delete fills through the
+  its settings plus generated Poured/fill IDs. Because only derived fills are
+  removed and the source definition is retained, this semantic evidence closes
+  the pre-edit evidence requirement without a native duplicate. Delete fills
+  through the
   expected `IPCB_PrimitivePoured.deletePourFills()` instance, prove the expected
   instance is absent, rebuild once through the expected Pour instance, then
   read the expected Poured instance again. The rebuild return can name a

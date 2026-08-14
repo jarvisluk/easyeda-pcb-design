@@ -33,7 +33,7 @@ import {
   resolveSafeOutputPath,
   resolveWindow,
   validateNetlistCompareExceptionArtifact,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const DECISIONS = DECISION_VALUES;
 // The bridge execution sandbox does not expose enum globals. This value is
@@ -55,7 +55,7 @@ const HIGH_RISK_EVIDENCE = new Set(["SOLVER_VERIFIED", "MEASUREMENT_VERIFIED"]);
 
 function usage() {
   return `Usage:
-  node easyeda_high_speed_audit.mjs [options]
+  node scripts/audits/easyeda_high_speed_audit.mjs [options]
 
 Options:
   --constraints FILE               JSON constraint/evidence record (recommended)

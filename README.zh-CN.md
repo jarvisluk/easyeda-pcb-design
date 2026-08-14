@@ -134,7 +134,7 @@ flowchart TD
 只要要写入 EasyEDA，就额外加载 [`live-build-gates.md`](skills/easyeda-pcb-design/references/workflows/live-build-gates.md) 与 [`api-map.md`](skills/easyeda-pcb-design/references/api/api-map.md)，并先运行：
 
 ```bash
-node skills/easyeda-pcb-design/scripts/check_companion.mjs
+node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 ```
 
 只有退出码为 `0` 且结果包含 `ready: true` 才能继续。写入前绑定工程和文档 UUID；每个操作都要等待完成，并以保存、重新打开后的语义回读为准。
@@ -230,6 +230,12 @@ node skills/easyeda-pcb-design/scripts/check_companion.mjs
     │   ├── api/                  # live API 与制造输出边界
     │   └── supporting/           # 计算、来源和完整示例
     └── scripts/                  # 可重复执行的检查、审计和计算工具
+        ├── audits/               # 设计、布局、高速、网表和制造审计
+        ├── calc/                 # 分析计算器及其测试
+        ├── lib/                  # 共享审计工具和几何工具
+        ├── lints/                # baseline、器件、约束和叠层 lint
+        ├── live/                 # companion、身份、revision、快照和 gate-ledger 检查
+        └── tests/                # 跨脚本回归套件
 ```
 
 `skills/easyeda-pcb-design/` 是安装边界。仓库级文件和本地 `designs/` 工程不属于 skill，不应一起安装。

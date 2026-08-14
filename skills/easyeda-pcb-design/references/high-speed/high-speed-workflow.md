@@ -91,6 +91,13 @@ compensation as assumptions.
 
 ## Verification
 
+Order the two audits explicitly: run the baseline audit first to see which nets it
+hints as high-speed, then the high-speed audit from
+[high-speed-constraints.md](high-speed-constraints.md), then the baseline audit
+again with `--high-speed-audit-report` so those hints can clear. For a review with
+no edits, that final pass is the one that carries the conclusion; do not rerun the
+baseline audit on unchanged geometry for any other reason.
+
 For PCB or end-to-end verification, run:
 
 1. baseline EasyEDA design audit;
@@ -103,8 +110,6 @@ For PCB or end-to-end verification, run:
 8. EasyEDA DRC and connectivity;
 9. fabricator capability/coupon check;
 10. field/S-parameter solver or measurement escalation.
-
-Run `node scripts/easyeda_audit_tests.mjs` after modifying either audit script.
 
 Any routing, layer, via, stackup, connector, or copper change invalidates downstream high-speed checks.
 The report carries a normalized design fingerprint. A baseline audit rejects a

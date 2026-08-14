@@ -13,7 +13,7 @@ import {
   findBridge,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, BLOCKED: 2, UNVERIFIED: 3 });
 const ROLES = new Set(["working", "rollback", "diagnostic", "final"]);
@@ -32,7 +32,7 @@ const CLEANUP = new Set([
 
 function usage() {
   return `Usage:
-  node scripts/easyeda_revision_guard.mjs --manifest FILE [options]
+  node scripts/live/easyeda_revision_guard.mjs --manifest FILE [options]
 
 Options:
   --manifest FILE                 Project revision-manifest.json

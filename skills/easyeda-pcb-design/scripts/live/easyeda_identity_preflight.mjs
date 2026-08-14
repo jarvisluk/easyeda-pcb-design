@@ -14,19 +14,19 @@ import {
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 import {
   collectNativeComparison,
   identityContractIssues,
   summarizeNativeComparison,
-} from "./easyeda_netlist_compare.mjs";
+} from "../audits/easyeda_netlist_compare.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, MISMATCH: 2, UNVERIFIED: 3 });
 const DOCUMENT_TYPE = Object.freeze({ SCHEMATIC_PAGE: 1, PCB: 3 });
 
 function usage() {
   return `Usage:
-  node scripts/easyeda_identity_preflight.mjs \\
+  node scripts/live/easyeda_identity_preflight.mjs \\
     --schematic-page-uuid UUID [options]
 
 Options:

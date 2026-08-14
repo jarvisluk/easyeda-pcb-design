@@ -1,0 +1,33 @@
+{
+  "id": "antenna-module-selection",
+  "why": "Guards the phase-1 early-load rule for RADIO_ANTENNA. SKILL.md routes onboard-antenna.md as soon as the RADIO_ANTENNA decision is anything but a sourced NOT_APPLICABLE, which is counter-intuitive because the reference reads like a layout document. This case is also the only automated guard over the ORIENTATION_VIOLATION, ORIENTATION_CLEARED, and NOT_SUPPLIED prose-only gates, which no script validates.",
+  "request": "help me pick an ESP32 WiFi module for a small board, just selection and rough architecture for now",
+  "readOnly": true,
+  "expect": {
+    "entryState": "no design",
+    "enterAtPhase": 1,
+    "scopeLastPhase": 2,
+    "mode": "guide",
+    "tierAnyOf": ["baseline", "high-risk SI"],
+    "tierRule": "An integrated module antenna with no host RF feed is not high-risk SI; a host-board RF feed or custom PCB antenna always is. Either answer passes only if the reply names which case applies and still loads the antenna reference.",
+    "mustLoad": [
+      "references/workflows/entry-routing.md",
+      "references/specialized/onboard-antenna.md",
+      "references/workflows/component-selection-evidence.md"
+    ],
+    "mustNotLoad": [
+      "references/layout/layout-rules.md",
+      "references/workflows/drc-evidence-closure.md",
+      "references/api/manufacturing-output.md"
+    ],
+    "mustState": [
+      "RADIO_ANTENNA is an explicit primary-function decision, never a silent omission",
+      "module orientation closure is required before placement can be trusted",
+      "the next concrete design action, without authoring the next phase artifact"
+    ],
+    "mustNotState": [
+      "any fabrication or order readiness conclusion",
+      "any claim that a clean audit implies the antenna is verified"
+    ]
+  }
+}

@@ -53,6 +53,14 @@ unreviewed work rather than performing it without authorization.
 
 ## Capture shared inputs
 
+`<project>` throughout this skill means one working directory you keep for this
+board, named after it and outside the installed skill. Create it before the
+requirements baseline, keep every artifact under it in `evidence/audits/`,
+`evidence/calculations/`, `evidence/netlist/`, `evidence/snapshots/`, and
+`evidence/readbacks/`, and state the chosen directory once so later commands and
+reports agree. [live-build-gates.md](live-build-gates.md) repeats this contract
+for live work.
+
 Create `requirements-baseline.json` before architecture or part selection. It is
 the authoritative, revisioned requirements record; a generated `brief.md` is
 only a human-readable view. A brief must name the baseline revision and
@@ -63,11 +71,68 @@ record.
 The baseline must contain traceable `requestSources`, requirements labeled
 `CONFIRMED`, reversible `ASSUMPTION`, or `UNRESOLVED`, the researched `coreParts`
 and their capabilities, and one `primaryFunctions` decision for every required
-board-function category. Use the record shape enforced by
-`scripts/requirements_baseline_lint.mjs`; source IDs must point to the original
-request, a later user confirmation/delegation, a governing specification, a
-preserved engineering derivation, or authoritative core-part research. Do not
-cite the generated brief as its own authority.
+board-function category. Source IDs must point to the original request, a later
+user confirmation/delegation, a governing specification, a preserved engineering
+derivation, or authoritative core-part research. Do not cite the generated brief
+as its own authority.
+
+`scripts/lints/requirements_baseline_lint.mjs` enforces this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "recordType": "REQUIREMENTS_BASELINE",
+  "revision": "r1",
+  "project": { "name": "ESP32-C3 minimal system", "identity": "planning:<id>" },
+  "requestSources": [
+    { "id": "request", "kind": "USER_MESSAGE", "reference": "original board request" },
+    { "id": "datasheet", "kind": "MANUFACTURER_DATASHEET", "reference": "MPN datasheet revision" }
+  ],
+  "requirements": [
+    {
+      "id": "supply",
+      "category": "POWER",
+      "statement": "The board accepts 5 V input and powers peak load with margin",
+      "materiality": "MATERIAL",
+      "status": "CONFIRMED",
+      "basis": { "kind": "USER_CONFIRMED", "sourceIds": ["request"] }
+    }
+  ],
+  "primaryFunctions": [
+    {
+      "id": "power-input",
+      "category": "POWER_INPUT",
+      "feature": "5 V input and 3.3 V regulation",
+      "boardDisposition": "INCLUDED",
+      "implementation": "USB-C VBUS into a 3.3 V LDO",
+      "alternatives": ["header input", "deliberate omission"],
+      "consequences": ["changes mechanics, power, pin allocation, cost, firmware"],
+      "sourceIds": ["request", "datasheet"],
+      "approval": { "kind": "USER_CONFIRMED", "sourceIds": ["request"] }
+    }
+  ],
+  "coreParts": [
+    {
+      "reference": "U1",
+      "manufacturerPartNumber": "<exact MPN>",
+      "sourceIds": ["datasheet"],
+      "capabilities": [
+        { "id": "native-usb", "name": "native USB Serial/JTAG", "decisionId": "power-input" }
+      ]
+    }
+  ]
+}
+```
+
+`primaryFunctions` requires one entry for each of `POWER_INPUT`,
+`PROGRAMMING_DEBUG`, `EXTERNAL_INTERFACES`, `RADIO_ANTENNA`,
+`CONTROLS_INDICATORS`, and `EXPANSION_TEST`. `boardDisposition` is `INCLUDED`,
+`OMITTED`, `NOT_APPLICABLE`, or `UNRESOLVED`; a category that does not apply is
+still an explicit decision, never a silent omission. `materiality` is `MATERIAL`
+or `REVERSIBLE`. `status` is `CONFIRMED`, `ASSUMPTION`, or `UNRESOLVED`. An
+`approval.kind` is `ORIGINAL_REQUEST_EXPLICIT`, `USER_CONFIRMED`, or
+`USER_DELEGATED`; a requirement `basis.kind` also accepts `GOVERNING_SPEC` and
+`ENGINEERING_DERIVATION`.
 
 Record the requirements that influence either scope:
 
@@ -92,12 +157,16 @@ Stop when a missing choice can materially change architecture, safety,
 mechanics, or fabrication. For schematic-only work, capture known PCB-facing
 constraints without solving the PCB; they become part of the handoff.
 
-Run the baseline check after intake and again after core-part research:
+Run the baseline check after intake and again after core-part research. The
+intake pass is expected to report `UNRESOLVED`, because `coreParts` and several
+`primaryFunctions` decisions cannot exist yet. Treat that first result as the
+list of what still needs research or a user decision, not as a blocker to
+report. Only the post-research pass is expected to clear.
 
 ```bash
-node scripts/requirements_baseline_lint.mjs \
-  --record requirements-baseline.json \
-  --output evidence/audits/requirements-baseline-check-<revision>.json
+node scripts/lints/requirements_baseline_lint.mjs \
+  --record <project>/requirements-baseline.json \
+  --output <project>/evidence/audits/requirements-baseline-check-<revision>.json
 ```
 
 Keep the report append-only. `cleared: true`, the exact baseline revision, and
@@ -152,7 +221,7 @@ when the tentative architecture preferred a UART header.
 Close `PRIMARY_FUNCTIONS_CONFIRMED` only when the linter clears the current
 baseline and the user has confirmed material choices, the original request
 already specifies them, or the user explicitly delegated those tradeoffs.
-`AI_DEDICATED` authorizes project-local operations; it does not waive this
+Authorization to perform project-local operations never waives this
 product-function checkpoint. A reversible detail may remain a bounded labeled
 assumption, but a choice that materially affects user interaction,
 connector/mechanical form, firmware, cost, power architecture, pin allocation,
@@ -162,9 +231,9 @@ revision and invalidates this report plus dependent schematic/PCB evidence.
 
 ## Route live work to the correct gate branch
 
-Before live API work, select the authorization profile in `SKILL.md`, read
+Before live API work, select the live gate branch in
 [live-build-gates.md](live-build-gates.md), run
-`node scripts/check_companion.mjs`, and require `ready: true`.
+`node scripts/live/check_companion.mjs`, and require `ready: true`.
 
 Use the live branch that matches the transaction:
 
@@ -202,6 +271,8 @@ record:
 - the verified schematic/netlist identity and ERC result;
 - the schematic presentation-screen result and exact-page visual conclusion,
   including any intentional connector-map or cross-sheet labeling exception;
+- the schematic symbol-placement result and the page-envelope record with its
+  stated source, or the fact that page overrun stayed unscreened;
 - orderable part numbers, DNP/manual-fit intent, values, ratings, and variants;
 - the component-selection evidence record and fingerprint, exact manufacturer
   document IDs/revisions, preserved source-artifact hashes, and every blocked or
@@ -246,7 +317,7 @@ When PCB work exposes a required schematic change:
 
 1. stop the affected PCB work;
 2. describe the conflict and proposed schematic change;
-3. return to the schematic scope and apply the selected authorization gate;
+3. return to the schematic scope and apply the matching live gate branch;
 4. rerun schematic verification and issue a new revision-bound handoff;
 5. resynchronize the PCB and prove manufacturing/native netlist parity before
    resuming placement or routing.

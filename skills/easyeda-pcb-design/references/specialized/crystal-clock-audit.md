@@ -67,11 +67,11 @@ Agents must never set `EASYEDA_AUDIT_USER_ATTEST` or write the attest file.
 ## Run
 
 ```bash
-node scripts/easyeda_crystal_clock_audit.mjs \
+node scripts/audits/easyeda_crystal_clock_audit.mjs \
   --constraints crystal-clock-constraints.json \
   --output crystal-clock-audit.json
 
-node scripts/easyeda_design_audit.mjs \
+node scripts/audits/easyeda_design_audit.mjs \
   --ground-net GND \
   --crystal-audit-report crystal-clock-audit.json \
   --output design-audit.json

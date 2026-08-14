@@ -26,7 +26,7 @@ import {
   resolveHumanAttestation,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const DECISIONS = DECISION_VALUES;
 // The bridge execution sandbox does not expose enum globals. This value is
@@ -40,7 +40,7 @@ const MANUAL_REVIEW_EVIDENCE = new Set([
 
 function usage() {
   return `Usage:
-  node easyeda_crystal_clock_audit.mjs --constraints FILE [options]
+  node scripts/audits/easyeda_crystal_clock_audit.mjs --constraints FILE [options]
 
 Options:
   --constraints FILE               Revision-controlled crystal/clock constraints

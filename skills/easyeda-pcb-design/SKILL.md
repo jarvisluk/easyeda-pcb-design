@@ -9,201 +9,222 @@ Lead intent through implementation; explain decisions and close with audits.
 
 **A clean DRC/audit is not a fabrication release.** Never claim readiness from script output alone.
 
-## Select entry state, scope, and mode
+## Follow the complete design pipeline
 
-Identify what already exists before choosing a workflow:
+Every task is a slice of one pipeline. Know the whole sequence, then run only the
+phases the task owns. Each phase closes on evidence bound to the exact revision,
+and no later phase closes an earlier one.
 
-1. **No design** — start from requirements; for live writes use new construction
-   and stop at the user's requested scope.
-2. **Existing schematic** — review/modify it, or close its handoff and create the PCB.
-3. **Unfinished PCB** — bind and assess the existing PCB, then continue its
-   incomplete placement, routing, or copper work without replaying construction.
-4. **Routed PCB** — review it or use bounded existing-board repair. If schematic
-   identity or synchronization is stale, return through the handoff gate first.
+| # | Phase | Closes on | Primary reference |
+| --- | --- | --- | --- |
+| 1 | Intake, requirements baseline, core-part research, primary-function confirmation | `PRIMARY_FUNCTIONS_CONFIRMED` with a cleared baseline lint report | `entry-routing.md` |
+| 2 | Architecture, exact part/variant choice, sourced parameters, library binding | cleared component-selection evidence record | `component-selection-evidence.md` |
+| 3 | Schematic implementation, one functional block at a time | `SCHEMATIC_IDENTITY_STABLE` after the first-block canary | `schematic-workflow.md`, `schematic-presentation.md` |
+| 4 | Schematic verification: ERC, presentation screen, netlist identity, footprint/pad map | `SCHEMATIC_VERIFIED` | `schematic-workflow.md` |
+| 5 | Schematic-to-PCB handoff | handoff record bound to the saved schematic revision | `entry-routing.md` |
+| 6 | Outline, stackup, constraints, floorplan, PCB creation and synchronization | `CLEARED_FOR_PLACEMENT`, then `PCB_SYNC_MATCH` | `constraint-planning.md`, `stackup-planning.md`, `pcb-workflow.md` |
+| 7 | Placement | `PLACEMENT_CLEAR_FOR_ROUTING` | `placement-closure.md` |
+| 8 | Routing | `ROUTING_CANARY_CLEAR`, then `FULL_ROUTING_CLEAR` | `layout-rules.md` |
+| 9 | Copper and stitching | `COPPER_CANARY_CLEAR` plus complete filled-region readback | `layout-rules.md`, `pcb-workflow.md` |
+| 10 | PCB verification and DRC closure | `DESIGN_CLOSURE` | `drc-evidence-closure.md`, `review-checklist.md` |
+| 11 | Manufacturing export and review, only when requested | a review conclusion, never a fabrication release | `manufacturing-output.md` |
 
-Treat an existing but incomplete PCB as **PCB continuation**, not repair. Treat
-local replacement of already-committed geometry on a routed board as repair.
+The gate names above are the new-construction sequence. Modification,
+continuation, and repair reach the same phases through their own branch gates in
+`live-build-gates.md`; use that branch's names rather than forcing a
+construction gate into its ledger.
 
-Then select the target scope:
+At each phase state the decision, its basis, any assumption, and the next gate.
+Proceed with a labeled reversible assumption; stop when a missing choice could
+materially change architecture, safety, mechanics, or fabrication. Follow feasible
+explicit placement requirements. If one is infeasible, show the specific conflict
+and propose alternatives instead of silently accepting or overriding it.
 
-1. **Schematic only** — guide, create, modify, or review a schematic. Stop at
-   schematic verification and the handoff gate; do not start PCB work.
-2. **PCB only** — place, route, modify, or review a PCB from an existing
-   schematic and its handoff record. Do not silently redesign the schematic.
-3. **End to end** — complete both scopes in order and close the handoff gate
-   before PCB implementation.
+## Take only the slice the task needs
+
+Task type changes where you enter the pipeline, where you stop, and whether you
+write. It never reorders the phases and never lets one close without its own
+evidence.
+
+**Entry state sets the first phase you own.** Inspect the live design rather than
+trusting the request wording or a document name.
+
+| Entry state | Enter at | Live branch |
+| --- | --- | --- |
+| No design | phase 1 | new construction |
+| Existing schematic | phase 4 to verify, phase 3 for a bounded edit, phase 5 to hand off | existing-schematic modification |
+| Unfinished PCB | bind and baseline, then the first incomplete gate in phases 6-10 | existing-board continuation |
+| Routed PCB | the phase owning the committed geometry, after re-proving phase 5 currency | existing-board repair |
+
+Never replay construction for work whose exact-revision evidence is still valid,
+and never assume phase 5 currency: stale schematic identity or synchronization
+sends continuation and repair back through the handoff before geometry work.
+Entry state limits where you *write*, never how far a review must *read*.
+
+**Scope sets the last phase you own.** Schematic only stops after phase 5 and
+never starts PCB work. PCB only begins from an existing schematic and its bound
+handoff record without silently redesigning the schematic. End to end runs phases
+1-10 in order. Phase 11 is added only on explicit request, except that a
+fabrication or order-readiness question puts phases 1-11 in review scope by
+itself: inventory the upstream requirements, part-evidence, schematic, and
+handoff evidence too, however late the board's entry state is, and treat absent
+manufacturing outputs as a finding rather than as out of scope.
 
 Honor a scope explicitly named by the user. If the request is ambiguous, choose
 the narrowest scope that satisfies it and state what remains outside scope.
 Scope never implies completion: a cleared schematic is not a cleared PCB, and a
 cleared PCB is not a fabrication release.
 
-Choose the mode from the user's outcome:
+**Mode sets what you do inside the slice:**
 
 1. **Guide** — develop requirements, architecture, layout, or tradeoffs and give
-   the next concrete design action. Use audits only when they answer the request.
-2. **Build or modify** — follow the design sequence, implement approved choices,
-   and verify each completed phase.
-3. **Review or release** — inspect the exact revision within the selected scope,
-   run applicable audits, explain findings and evidence, and use the natural
-   review conclusion contract. Treat any fabrication/order-readiness question
-   as an end-to-end formal review.
+   the next concrete design action. Name the artifact the next phase needs rather
+   than authoring it, until the user asks to start that phase. Use audits only
+   when they answer the request.
+2. **Build or modify** — implement approved choices phase by phase and close each
+   gate on readback evidence.
+3. **Review or release** — write nothing, bind the exact revision, inventory the
+   evidence for the phases in scope, run the applicable audits, and use the
+   natural review conclusion contract. Treat any fabrication/order-readiness
+   question as an end-to-end formal review.
 
 When the request spans modes, design first, implement second, and review last.
-Do not use PASS/FAIL language for ordinary guidance or work in progress.
 
-## Follow the selected lifecycle
-
-Read [references/workflows/entry-routing.md](references/workflows/entry-routing.md) for entry-state routing,
-scope boundaries, the structured requirements/primary-functions baseline,
-handoff, change propagation, and live gates.
-Then load:
-
-- **Schematic only:** [references/workflows/schematic-workflow.md](references/workflows/schematic-workflow.md).
-- **PCB only, including continuation:** [references/workflows/pcb-workflow.md](references/workflows/pcb-workflow.md),
-  [references/layout/constraint-planning.md](references/layout/constraint-planning.md), and
-  [references/layout/layout-rules.md](references/layout/layout-rules.md).
-- **End to end:** both workflow references in order; close the handoff gate
-  before loading placement/routing details.
-
-For existing-design review, use that scope's review branch. A schematic-only review may assess
-electrical intent, parts, ERC, and handoff readiness, but must not infer PCB
-placement, routing, copper, mechanical closure, or manufacturing readiness.
-
-At each phase, state the decision, its basis, any assumption, and the next gate.
-Proceed with a labeled reversible assumption; stop when a missing choice could
-materially change architecture, safety, mechanics, or fabrication.
-Follow feasible explicit placement requirements. If one is infeasible, show the
-specific conflict and propose alternatives instead of silently accepting or
-overriding it.
-
-## Select the authorization profile
-
-Before live mutation, select and record one project-scoped profile:
-
-- **USER_OWNED** (default) — require operation-specific confirmation for
-  destructive or bulk changes.
-- **AI_DEDICATED** — only when the user explicitly states that the current
-  project/revision is AI-controlled or grants full project design authority.
-  Treat that statement as standing authorization for project-local design
-  mutations within the stated objective; do not repeatedly ask before ordinary
-  placement, routing, via, save, or derived-copper regeneration operations.
-
-Authorization never replaces UUID binding, semantic capture, rollback planning,
-saved-design readback, netlist parity, DRC, or exact-revision evidence. Neither
-profile authorizes deleting the only recoverable project/revision, account or
-team administration, sharing/publishing, fabrication release, ordering, or
-payment. Read [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md)
-for the operation classes and evidence required by each profile.
+Read [references/workflows/entry-routing.md](references/workflows/entry-routing.md)
+for entry classification, scope boundaries, the structured
+requirements/primary-functions baseline, the handoff contract, and change
+propagation; then load the phase references your slice actually reaches from the
+routing list below. A schematic-only review may assess electrical intent, parts,
+ERC, and handoff readiness, but must not infer PCB placement, routing, copper,
+mechanics, or manufacturing readiness.
 
 ## Use the EasyEDA companion for live work
 
 Use `easyeda-api` (EasyEDA API skill / bridge) for every live EasyEDA operation.
 The sole exception is final-named project creation through UI after a documented
-API non-commit and explicit user authorization; return immediately to companion
-UUID binding and semantic readback before any design edit.
-Read [references/api/api-map.md](references/api/api-map.md), the exact companion API
-documentation, and [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md)
-before a live build or substantial modification. Classify the transaction as
-**new construction**, **existing-schematic modification**, **existing-board
-continuation**, or **existing-board repair** before applying a gate. First run:
+API non-commit and an operation-specific confirmation for one UI creation
+attempt; return immediately to companion UUID binding and semantic readback
+before any design edit. Read
+[references/api/api-map.md](references/api/api-map.md), the exact companion API docs, and
+[references/workflows/live-build-gates.md](references/workflows/live-build-gates.md) before a live
+build or substantial modification. Its state machines are the live enforcement of
+the same pipeline: run the branch matching the entry state above, over the phases
+your scope owns. First run:
 
 ```bash
-node scripts/check_companion.mjs
+node scripts/live/check_companion.mjs
 ```
 
 Require exit code `0` and `ready: true`; otherwise stop. Confirm project and
 document UUIDs before writes, await every operation, and trust semantic readback
-from the saved/reopened design rather than a truthy return.
-For a no-design live build, close the project-creation/binding gate in
-`live-build-gates.md` before schematic construction; project creation is itself
-a beta document-tree transaction and cannot be treated as an unqualified setup
-step.
+from the saved/reopened design over a truthy return. For a no-design live build,
+close the project-creation/binding gate before schematic construction; project
+creation is itself a beta document-tree transaction, not setup.
 
-Advance only gates required by the selected scope; schematic-only work stops
-after schematic verification. For modification, continuation, or repair, bind
-the exact revision and apply its routed evidence/readback state machine.
-Continuation requires a current handoff/synchronization baseline and changes
-only declared incomplete work; repair proves pre/post manufacturing-netlist
-parity. The semantic-capture helper is neither a restorable backup nor
-authorization. Under `AI_DEDICATED`, retained source Pours plus semantic capture
-may close pre-edit evidence for fill-only regeneration. Do not retroactively
-apply construction gates unless the edit crosses into new construction.
-Qualify unknown/beta writes in a probe project, keep the UUID manifest, and
-allow at most one active diagnostic candidate.
+Record every gate transition in the ledger and operation log defined in
+`live-build-gates.md`, require `CLEARED` from `easyeda_gate_ledger.mjs` before
+advancing or claiming closure, and pass that report to the baseline audit with
+`--gate-ledger`. A gate you did not close in the ledger is open, however the
+work reads in prose. The ledger orders live gates only, and a read-only review
+uses the `read-only-review` branch.
 
-`importChanges()` and `setNetlist()` are separate bulk operations requiring
-profile authorization, preflight evidence, and post-operation readback. Use
-visual inspection for confirmation, not primary construction.
-If EasyEDA's beta document comparator alone remains stale after saved/reopened
-readback, use only the strict multi-view false-negative contract in
-`live-build-gates.md`; manufacturing equality by itself is never sufficient.
+The ledger reports integrity (`decision`) and slice completion (`completion`)
+separately. `CLEARED` with `INCOMPLETE` is the honest state of work in progress:
+report it with its remaining gates, as neither a closure nor a failure. The
+baseline audit keeps an incomplete or axis-less ledger
+`UNVERIFIED FOR FABRICATION`, so never relabel scope or branch to move the
+terminal gate closer.
 
-## Protect user work
+Advance only the gates your slice owns; schematic-only work stops after phase 4
+verification and its handoff. For modification, continuation, or repair, bind the
+exact revision and apply that branch's evidence/readback state machine.
+Continuation requires a current handoff/synchronization baseline and changes only
+declared incomplete work; repair proves pre/post manufacturing-netlist parity.
+The semantic-capture helper is neither a restorable backup nor authorization. Do
+not retroactively apply construction gates unless the edit crosses into new
+construction. Qualify unknown/beta writes in a probe project, keep the UUID
+manifest, and allow at most one active diagnostic candidate.
 
-Under `USER_OWNED`, require explicit confirmation before deletion, mass net
-changes, bulk overwrite/synchronization, forced output overwrite, or a copper
-rebuild that could discard work. Under `AI_DEDICATED`, standing authorization
-covers project-local mutations within the design objective, but high-risk source
-or identity changes still require stronger rollback evidence and bounded
-readback. Regenerating derived Poured fills while retaining the exact source
-Pour definitions requires semantic capture, exact-ID binding, one rebuild, save,
-and readback/DRC; it does not require a separate native duplicate. Never delete
-the only recoverable project/revision or call a manufacturing order API.
+Regenerating derived Poured fills while retaining the exact source Pour
+definitions requires semantic capture, exact-ID binding, one rebuild, save, and
+readback/DRC. `importChanges()` and `setNetlist()` are separate bulk operations:
+run them only when the selected live branch requires them or an
+operation-specific confirmation is recorded, and only after preflight evidence
+and post-operation readback. Use visual inspection for confirmation, not primary
+construction. If EasyEDA's beta document comparator alone remains stale after
+saved/reopened readback, use only the strict multi-view false-negative contract
+in `live-build-gates.md`; manufacturing equality by itself is never sufficient.
 
 ## Classify technical depth
 
-1. **Baseline** — ordinary boards without controlled-impedance needs.
-2. **Controlled/high-speed** — differential pairs, target impedance, USB2,
-   Ethernet, LVDS, or transmission-line behavior from fast edges.
-3. **High-risk SI** — USB 3.x, PCIe, DDR, multi-gigabit, RF launches, dense
-   escape, or solver/eye/S-parameter requirements.
+Each tier adds a constraint record, an audit, and a minimum evidence strength on
+top of the baseline lifecycle. Tiers are cumulative:
 
-If uncertain, do not downgrade. High-speed candidates require the high-speed
-path; baseline audit alone remains `UNVERIFIED FOR FABRICATION`. Classification
-adds guidance but never replaces the baseline lifecycle.
+| Tier | Trigger | Adds | Strongest gate |
+| --- | --- | --- | --- |
+| Baseline | no differential pair, target impedance, or transmission-line behavior | nothing beyond the baseline workflow and `easyeda_design_audit.mjs`; no constraint record, no high-speed reference | ordinary DRC and placement closure |
+| Controlled/high-speed | differential pairs, target impedance, USB2, Ethernet, LVDS, fast-edge transmission-line behavior | a revision-controlled `CONTROLLED_HIGH_SPEED` record, the placement/routing/return-path extensions, and `easyeda_high_speed_audit.mjs` beside the baseline audit | impedance needs `FAB_CONFIRMED`, `SOLVER_VERIFIED`, or `MEASUREMENT_VERIFIED`; `ANALYTICAL_ESTIMATE` cannot close it |
+| High-risk SI | USB 3.x, PCIe, DDR, HDMI, SerDes, MIPI CSI/DSI, SATA, DisplayPort, `dataRateGbps >= 1`, RF launch, dense BGA escape or via field, or a stated eye-mask, S-parameter, loss, crosstalk, TDR, or VNA requirement | `HIGH_RISK_SI` plus a mandatory `solverOrMeasurement` gate | only `SOLVER_VERIFIED` or `MEASUREMENT_VERIFIED` closes it, however clean the geometry is |
+
+The audit auto-promotes tier 2 to tier 3 from interface name, data rate, declared
+launches, and stated validation requirements, so a record still claiming
+`CONTROLLED_HIGH_SPEED` for a promoted interface fails constraint completeness.
+A host-board RF feed or custom PCB antenna is always high-risk SI; an integrated
+module antenna with no host RF feed is not, but still needs the antenna reference.
+
+If uncertain, do not downgrade. Above baseline, a baseline audit alone remains
+`UNVERIFIED FOR FABRICATION`. Classification adds requirements but never
+replaces the baseline lifecycle.
 
 ## Load only relevant guidance
 
-Load only what the task needs:
+Pipeline references, loaded for the phases your slice reaches:
 
-- Entry-state selection, scope, requirements baseline, primary-function
-  confirmation, handoff, or cross-scope change:
+- Phases 1 and 5, and any cross-scope change — entry state, scope, requirements
+  baseline, primary-function confirmation, handoff:
   [references/workflows/entry-routing.md](references/workflows/entry-routing.md)
-- Schematic creation, modification, or schematic-only review:
-  [references/workflows/schematic-workflow.md](references/workflows/schematic-workflow.md)
-- Schematic functional layout, label/port usage, readability regression, or
-  handoff presentation closure:
-  [references/workflows/schematic-presentation.md](references/workflows/schematic-presentation.md)
-- Part selection, parameters, suitability, source access, exact-MPN/library
-  binding, missing-library handling, or substitution:
-  [references/workflows/component-selection-evidence.md](references/workflows/component-selection-evidence.md)
-- Component-class parameter coverage:
+- Phase 2 — part selection, parameters, suitability, source access,
+  exact-MPN/library binding, missing-library handling, or substitution:
+  [references/workflows/component-selection-evidence.md](references/workflows/component-selection-evidence.md);
+  component-class parameter coverage:
   [references/workflows/component-parameter-profiles.md](references/workflows/component-parameter-profiles.md)
-- PCB creation from a schematic, unfinished-PCB continuation, repair, or review:
-  [references/workflows/pcb-workflow.md](references/workflows/pcb-workflow.md). For creation,
-  also load the three schematic handoff references above.
-- Place/route/copper and assembly closure:
-  [references/layout/constraint-planning.md](references/layout/constraint-planning.md),
-  [references/layout/layout-rules.md](references/layout/layout-rules.md), and
-  [references/layout/placement-closure.md](references/layout/placement-closure.md)
-- Requirement-to-layer-count selection, layer roles, materials, or reference assignment:
+- Phases 3 and 4 — schematic creation, modification, or schematic-only review:
+  [references/workflows/schematic-workflow.md](references/workflows/schematic-workflow.md);
+  functional layout, labels/ports, readability, handoff presentation:
+  [references/workflows/schematic-presentation.md](references/workflows/schematic-presentation.md)
+- Phases 6 to 10 — PCB creation from a schematic, unfinished-PCB continuation,
+  repair, or review:
+  [references/workflows/pcb-workflow.md](references/workflows/pcb-workflow.md). For creation or
+  end-to-end review, also load the phase 2 to 4 references above.
+- Phase 6 — constraints and floorplan closure:
+  [references/layout/constraint-planning.md](references/layout/constraint-planning.md);
+  layer count/roles, materials, references:
   [references/layout/stackup-planning.md](references/layout/stackup-planning.md)
+- Phases 7 to 9 — place/route/copper and assembly closure:
+  [references/layout/layout-rules.md](references/layout/layout-rules.md) and
+  [references/layout/placement-closure.md](references/layout/placement-closure.md)
+- Phase 10 — finish/review:
+  [references/workflows/review-checklist.md](references/workflows/review-checklist.md); PCB DRC
+  evidence: [references/workflows/drc-evidence-closure.md](references/workflows/drc-evidence-closure.md)
+- Phase 11 — manufacturing export/regression:
+  [references/api/manufacturing-output.md](references/api/manufacturing-output.md)
+- Any live phase — [references/api/api-map.md](references/api/api-map.md),
+  [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md), and exact
+  `easyeda-api` docs
+
+Specialized references, added to the phases they touch only when the design
+requires them:
+
 - Switching regulator or power stage: [references/layout/power-layout.md](references/layout/power-layout.md)
 - ADC, DAC, reference, or mixed-signal partition:
   [references/layout/mixed-signal-layout.md](references/layout/mixed-signal-layout.md)
 - BGA, HDI, fine-pitch escape, or via-in-pad:
   [references/specialized/bga-hdi.md](references/specialized/bga-hdi.md)
-- Live API/build: [references/api/api-map.md](references/api/api-map.md),
-  [references/workflows/live-build-gates.md](references/workflows/live-build-gates.md), and exact
-  `easyeda-api` docs
-- Finish/review: [references/workflows/review-checklist.md](references/workflows/review-checklist.md)
-- PCB DRC evidence:
-  [references/workflows/drc-evidence-closure.md](references/workflows/drc-evidence-closure.md)
-- Manufacturing export/regression: [references/api/manufacturing-output.md](references/api/manufacturing-output.md)
 - Crystal/resonator loop: [references/specialized/crystal-clock-audit.md](references/specialized/crystal-clock-audit.md)
-- Integrated-module or host-board PCB antenna, including mandatory
-  numbered-pad-to-board-edge direction closure: [references/specialized/onboard-antenna.md](references/specialized/onboard-antenna.md)
+- Module or host-board PCB antenna, including mandatory numbered-pad-to-board-edge
+  direction closure: [references/specialized/onboard-antenna.md](references/specialized/onboard-antenna.md).
+  Load it as soon as the phase 1 `RADIO_ANTENNA` decision is anything but a
+  sourced `NOT_APPLICABLE`, not only at layout.
 - Controlled/high-speed: [references/high-speed/high-speed-workflow.md](references/high-speed/high-speed-workflow.md)
   and [references/high-speed/impedance-and-vias.md](references/high-speed/impedance-and-vias.md)
 - HS audit: [references/high-speed/high-speed-constraints.md](references/high-speed/high-speed-constraints.md)
@@ -216,56 +237,70 @@ Load only what the task needs:
 - Change HS audit code: [references/api/high-speed-api-map.md](references/api/high-speed-api-map.md)
 - Formulas/attribution: [references/supporting/sources.md](references/supporting/sources.md)
 
-Do not load audit implementation references for a design-guidance question.
-Do not load high-speed material for a confirmed baseline design. Never use
+Do not load audit implementation references for a design-guidance question, or
+high-speed material for a confirmed baseline design. For review, load in the stages
+defined in `review-checklist.md` rather than every reference at once: inventory the
+evidence first, then load only the reference behind an actual finding. Never use
 certification language without the required measurement/compliance evidence.
 
 ## Use audits for design closure
 
 Run audits after each relevant phase, invalidating change, or review request. Read
-[references/workflows/review-checklist.md](references/workflows/review-checklist.md) before a formal
-review.
+[references/workflows/review-checklist.md](references/workflows/review-checklist.md) before a formal review.
 
-Baseline schematic or PCB audit, limited to the active document and selected
-scope:
+Baseline schematic or PCB audit, limited to the active document and scope:
 
 ```bash
-node scripts/easyeda_design_audit.mjs \
+node scripts/audits/easyeda_design_audit.mjs \
   --ground-net GND \
+  --schematic-page-envelope schematic-page-envelope.json \
   --placement-audit-report placement-closure.json \
   --high-speed-constraints high-speed-constraints.json \
+  --gate-ledger gate-ledger-check.json \
   --output design-audit.json
 ```
 
-Any `--allow-*` exception requires a specific engineering note. Do not use an
-exception to silence an unexplained result. Read each report's limitations;
+Omit a flag whose artifact the scope cannot produce: a schematic-only audit has no
+placement or PCB constraint artifact. When the scope does require an artifact that
+was never authored, author it from sources or report it absent; omitting the flag
+is not a substitute. Any schematic scope can produce the page-envelope record, so
+author it during page partition; without it, symbols drawn off the page stay
+undetectable and the schematic result stays `UNVERIFIED FOR FABRICATION`. Any `--allow-*` exception requires a specific engineering
+note, never to silence an unexplained result. Read each report's limitations;
 geometry checks do not prove electrical, mechanical, or manufacturing intent.
 
-Use the specialized tools only when applicable:
+Use the remaining tools at their owning phase, and only when applicable:
 
-- `easyeda_stackup_decision_lint.py` after comparing stackups, then
+- phase 1: `requirements_baseline_lint.mjs` after intake and again after
+  core-part research;
+- phase 2: `component_selection_evidence.mjs` for the part evidence record;
+- phase 6: `easyeda_stackup_decision_lint.py` after comparing stackups, then
   `easyeda_constraint_lint.py` before placement and after invalidating changes;
-- `easyeda_placement_audit.mjs` after placement and before routing, then after
-  every component, footprint, pad, via, interface, process, or access change;
-- `easyeda_crystal_clock_audit.mjs` for passive crystal/resonator loops;
-- `pcb_calc.py` for geometry, edge-rate, resistance, and conductor screening;
-- `easyeda_high_speed_audit.mjs` for controlled/high-speed work;
-- `easyeda_manufacturing_audit.py` after API-exporting Gerber/drill, BOM, and PnP.
+- phase 7: `easyeda_placement_audit.mjs` after placement and before routing, then
+  after every component, footprint, pad, via, interface, process, or access
+  change; its `--print-fingerprint` supplies the constraint `revision` for an
+  existing board;
+- any phase: `pcb_calc.py` for geometry, edge-rate, resistance, and conductor
+  screening; `easyeda_crystal_clock_audit.mjs` for passive crystal/resonator
+  loops; `easyeda_high_speed_audit.mjs` for controlled/high-speed work;
+- phase 11: `easyeda_manufacturing_audit.py` after API-exporting Gerber/drill,
+  BOM, and PnP; set `--expected-copper-layers` for the real stackup, as it
+  defaults to 2.
 
-Load each tool's routed reference. Bind reports to the revision. For PCB
-DRC, follow `drc-evidence-closure.md`; geometry or rule changes stale prior
-evidence. Calculators are estimates, not fabricator/solver evidence.
+Load each tool's routed reference. Bind reports to the revision. For PCB DRC,
+follow `drc-evidence-closure.md`; geometry or rule changes stale prior evidence.
+Calculators are estimates, not fabricator/solver evidence.
 
-Evidence closes a gate only with a recognized status and an existing artifact,
-or with the human-attestation mechanism defined in the relevant reference.
-Agents must never set the attestation environment variable or write the human
-attestation file. Missing evidence stays `UNVERIFIED FOR FABRICATION`.
+Evidence closes a gate only with a recognized status and an existing artifact, or
+with the human-attestation mechanism defined in the relevant reference. Agents must
+never set the attestation environment variable or write the attestation file.
+Missing evidence stays `UNVERIFIED FOR FABRICATION`.
 
 ## Report review results naturally
 
-For every concluded audit or review, write a concise engineering explanation,
-not a field-by-field status block. Cover all of the following in connected prose
-or short findings:
+For every concluded audit or review, write a concise engineering explanation, not
+a field-by-field status block. Cover all of the following in connected prose or
+short findings:
 
 1. identify the exact revision and reviewed scope;
 2. lead with whether the reviewed scope is clear, has blocking findings, or
@@ -275,38 +310,27 @@ or short findings:
 4. name assumptions, exceptions, and everything outside the selected scope;
 5. state the next concrete action.
 
-For schematic-only review, explicitly explain that PCB placement, routing,
-copper, mechanics, and manufacturing outputs were not reviewed. A schematic
-may be clear within its scope or suitable for PCB handoff without implying that
-the board is ready to fabricate.
+If the work has not reached its slice's terminal gate, say so and name the open
+gates. "Phases 1-7 closed, routing next" is a correct result; the same work
+presented as a finished design is not, and an unfinished slice is not a failure.
 
-For fabrication/order-readiness questions, include the controlled decision in
-a natural sentence using exactly `PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS`,
+For schematic-only review, explicitly explain that PCB placement, routing, copper,
+mechanics, and manufacturing outputs were not reviewed. A schematic may be clear
+within its scope or ready for PCB handoff without implying a fabricable board.
+
+For fabrication/order-readiness questions, include the controlled decision in a
+natural sentence using exactly `PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS`,
 `FAIL`, or `UNVERIFIED FOR FABRICATION`. Also say plainly which manufacturing
-outputs were reviewed, whether required high-speed evidence is present, and
-that the result is not authorization to fabricate or place an order. Missing
-design files, outputs, constraints, evidence, or companion access yields
+outputs were reviewed, whether required high-speed evidence is present, and that
+the result is not authorization to fabricate or order. Missing design files,
+outputs, constraints, evidence, or companion access yields
 `UNVERIFIED FOR FABRICATION` with the missing item and next step explained.
+`PASS WITH DOCUMENTED ASSUMPTIONS/EXCEPTIONS` covers reviewed evidence that
+carries a stated engineering assumption or exception; a required artifact that is
+absent, stale, or unreadable is missing evidence and may never be relabeled as a
+documented assumption or exception to reach it.
 
-Machine-readable audit artifacts must retain `fabricationRelease: false` and
-their existing decision fields. Do not reproduce those fields verbatim in the
-user-facing response unless the user requests raw audit output. Do not append a
-formal conclusion to ordinary guidance or intermediate build updates.
-
-After changing this skill:
-
-```bash
-node scripts/easyeda_audit_tests.mjs
-node scripts/requirements_baseline_lint.mjs --self-test
-node scripts/component_selection_evidence.mjs --self-test
-node scripts/easyeda_identity_preflight.mjs --self-test
-node scripts/easyeda_revision_guard.mjs --self-test
-node scripts/easyeda_repair_snapshot.mjs --self-test
-node scripts/easyeda_placement_audit.mjs --self-test
-node scripts/easyeda_crystal_clock_audit.mjs --self-test
-python3 scripts/pcb_calc_tests.py
-python3 scripts/easyeda_stackup_decision_lint.py --self-test
-python3 scripts/easyeda_constraint_lint.py --self-test
-python3 scripts/easyeda_manufacturing_audit.py --self-test
-node scripts/check_companion.mjs || true
-```
+Machine-readable audit artifacts must retain `fabricationRelease: false` and their
+existing decision fields. Do not reproduce those fields verbatim unless the user
+requests raw audit output, and do not append a formal conclusion to ordinary
+guidance or intermediate build updates.

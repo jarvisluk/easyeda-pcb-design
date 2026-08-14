@@ -18,7 +18,7 @@ measurement evidence.
 Run:
 
 ```bash
-python3 scripts/pcb_calc.py edge-screen \
+python3 scripts/calc/pcb_calc.py edge-screen \
   --rise-time-ns 1 --route-length-mm 25 --er 4
 ```
 
@@ -34,7 +34,7 @@ more representative than the bulk-Dk screen.
 Run:
 
 ```bash
-python3 scripts/pcb_calc.py trace-dc \
+python3 scripts/calc/pcb_calc.py trace-dc \
   --length-mm 100 --width-mm 0.25 --thickness-mm 0.035 \
   --temperature-c 80 --current-a 1
 ```
@@ -50,7 +50,7 @@ board thermal system require separate treatment.
 Run:
 
 ```bash
-python3 scripts/pcb_calc.py skin-depth --frequency-ghz 1
+python3 scripts/calc/pcb_calc.py skin-depth --frequency-ghz 1
 ```
 
 This is a smooth, homogeneous, nonmagnetic-conductor estimate. It helps explain

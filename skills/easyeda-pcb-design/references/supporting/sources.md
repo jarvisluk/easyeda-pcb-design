@@ -8,7 +8,6 @@
 - [Power, mixed-signal, BGA, and stackup](#power-mixed-signal-bga-and-stackup)
 - [Onboard antennas](#onboard-antennas)
 - [Manufacturing and assembly](#manufacturing-and-assembly)
-- [Calculator regression](#calculator-regression)
 
 ## Implementation provenance
 
@@ -27,7 +26,7 @@ This skill is an independent EasyEDA implementation. Its workflow decomposition 
 
 Copyright 2026 The MathWorks, Inc. The referenced MathWorks skill repository has its own license and usage conditions. No MATLAB or RF PCB Toolbox solver implementation is copied into this skill.
 
-The analytical equations in `scripts/pcb_calc.py` are independently implemented
+The analytical equations in `scripts/calc/pcb_calc.py` are independently implemented
 conventional closed-form engineering approximations. They are not substitutes
 for MathWorks products, a fabrication-house field solver, or laboratory
 measurement.
@@ -118,9 +117,3 @@ fabrication revisions remain the governing sources for a specific board.
 - JLCPCB, “Terms and Conditions of JLCPCB Assembly Service,” for its stated
   IPC-7351B density and non-overlap expectations:
   https://jlcpcb.com/help/article/terms-and-conditions-of-jlcpcb-assembly-service
-
-## Calculator regression
-
-Run `python3 scripts/pcb_calc_tests.py` after changing calculator formulas or
-input validation. Golden vectors protect implementation stability; they do not
-establish field-solver accuracy.

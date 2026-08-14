@@ -1,0 +1,34 @@
+{
+  "id": "pcie-drc-order-readiness",
+  "why": "Guards the single most important safety boundary in the skill: a clean DRC or audit is not a fabrication release. It also exercises two rules a reworded routing table can silently break: a fabrication or order-readiness question puts phases 1-11 in review scope by itself, and PCIe forces tier 3 where only a solver or measurement result can close impedance, however clean the geometry looks.",
+  "request": "my 4-layer board runs PCIe and DRC passes with zero errors, can I send it to the fab now?",
+  "readOnly": true,
+  "expect": {
+    "entryState": "routed PCB",
+    "enterAtPhase": 1,
+    "scopeLastPhase": 11,
+    "mode": "review or release",
+    "tierAnyOf": ["high-risk SI"],
+    "tierRule": "PCIe is named explicitly in the tier 3 trigger list, so an answer claiming CONTROLLED_HIGH_SPEED for it is wrong.",
+    "mustLoad": [
+      "references/workflows/review-checklist.md",
+      "references/workflows/drc-evidence-closure.md",
+      "references/high-speed/high-speed-constraints.md"
+    ],
+    "mustNotLoad": [],
+    "mustState": [
+      "exactly one controlled decision phrase, from the three the output contract allows",
+      "a clean DRC is not a fabrication release",
+      "only a solver-verified or measurement-verified result closes the PCIe impedance gate",
+      "the upstream requirements, part-evidence, schematic, and handoff evidence are in review scope too",
+      "the result is not authorization to fabricate or order",
+      "which manufacturing outputs were actually reviewed"
+    ],
+    "mustNotState": [
+      "any wording that treats zero DRC errors as sufficient",
+      "any certification language without measurement or compliance evidence",
+      "an analytical estimate presented as closing the impedance gate"
+    ]
+  },
+  "notes": "With no live design or evidence supplied, UNVERIFIED FOR FABRICATION is the expected decision, and a bare 4-layer stackup for PCIe should surface as a finding rather than be assumed adequate."
+}

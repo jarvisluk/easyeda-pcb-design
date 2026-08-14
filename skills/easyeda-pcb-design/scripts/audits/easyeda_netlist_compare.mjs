@@ -17,7 +17,7 @@ import {
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
   resolveWindow,
-} from "./audit_common.mjs";
+} from "../lib/audit_common.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, MISMATCH: 2, UNVERIFIED: 3 });
 
@@ -41,7 +41,7 @@ const CORE_COMPONENT_PROPERTIES = Object.freeze([
 
 function usage() {
   return `Usage:
-  node scripts/easyeda_netlist_compare.mjs \\
+  node scripts/audits/easyeda_netlist_compare.mjs \\
     --schematic-page-uuid UUID --pcb-uuid UUID [options]
 
 Options:

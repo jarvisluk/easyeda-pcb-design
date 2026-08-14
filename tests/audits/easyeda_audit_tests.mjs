@@ -23,11 +23,12 @@ import {
   readHighSpeedClearanceReport,
   resolveHumanAttestation,
   resolveSafeOutputPath,
-} from "./audit_common.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/lib/audit_common.mjs";
 import {
   DECISIONS as BASELINE_DECISIONS,
   EXIT as BASELINE_EXIT,
   analyze as analyzeBaseline,
+  analyzeSchematicPlacement,
   analyzeSchematicPresentation,
   bindPcbDrcEvidence,
   collectorCode as baselineCollectorCode,
@@ -35,15 +36,17 @@ import {
   pcbFixture,
   resolveWindow as resolveBaselineWindow,
   schematicFixture,
+  schematicPageEnvelopeFixture,
   validateNetlistCompareExceptionArtifact,
-} from "./easyeda_design_audit.mjs";
+  validateSchematicPageEnvelope,
+} from "../../skills/easyeda-pcb-design/scripts/audits/easyeda_design_audit.mjs";
 import {
   REQUIRED_INVALIDATION_TRIGGERS,
   REQUIRED_PARAMETER_COVERAGE_ASPECTS,
   sha256Buffer,
   validateArtifact as validateSelectionArtifact,
   validateComponentEvidenceRecord,
-} from "./component_selection_evidence.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/lints/component_selection_evidence.mjs";
 import {
   DECISIONS as CRYSTAL_DECISIONS,
   analyze as analyzeCrystal,
@@ -52,7 +55,15 @@ import {
   mergeConstraintRecord as mergeCrystalConstraintRecord,
   parseArgs as parseCrystalArgs,
   selfTestFixture as crystalSelfTestFixture,
-} from "./easyeda_crystal_clock_audit.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/audits/easyeda_crystal_clock_audit.mjs";
+import {
+  BRANCH_GATES as LEDGER_BRANCH_GATES,
+  EXIT as LEDGER_EXIT,
+  analyzeLedger,
+  analyzeOperationLog,
+  selfTestLedger,
+  selfTestOperationLog,
+} from "../../skills/easyeda-pcb-design/scripts/live/easyeda_gate_ledger.mjs";
 import {
   DECISIONS,
   EXIT,
@@ -63,7 +74,7 @@ import {
   parseArgs,
   routeSummary,
   selfTestFixture,
-} from "./easyeda_high_speed_audit.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/audits/easyeda_high_speed_audit.mjs";
 import {
   comparePcbDataPlane,
   compareNetlists,
@@ -72,27 +83,29 @@ import {
   parseArgs as parseNetlistCompareArgs,
   summarizeNativeComparison,
   verifyNativeCacheException,
-} from "./easyeda_netlist_compare.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/audits/easyeda_netlist_compare.mjs";
 import {
   analyzeIdentity,
   parseArgs as parseIdentityPreflightArgs,
   parseInternalNetlistViews,
   pcbCollectorCode as identityPcbCollectorCode,
   schematicCollectorCode as identitySchematicCollectorCode,
-} from "./easyeda_identity_preflight.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/live/easyeda_identity_preflight.mjs";
 import {
   analyzeRevisionIntent,
   parseArgs as parseRevisionGuardArgs,
   resolveSafeInputPath,
   treeCollectorCode as revisionTreeCollectorCode,
-} from "./easyeda_revision_guard.mjs";
+} from "../../skills/easyeda-pcb-design/scripts/live/easyeda_revision_guard.mjs";
 import {
   STATUS as PLACEMENT_STATUS,
   analyzePlacement,
   constraintFixture as placementConstraintFixture,
+  designFingerprintLookup,
   evidenceFixture as placementEvidenceFixture,
   fixture as placementFixture,
-} from "./easyeda_placement_audit.mjs";
+  parseArgs as parsePlacementArgs,
+} from "../../skills/easyeda-pcb-design/scripts/audits/easyeda_placement_audit.mjs";
 
 function withHumanAttestation(options, revision = "test-rev-1") {
   return {
@@ -307,6 +320,283 @@ function runTests() {
     /\bEDMT_EditorDocumentType\b/,
   );
   assert.match(baselineCollectorCode(), /getState_SpecialPad/);
+
+  // Fingerprint lookup breaks the circular dependency that made a
+  // layout-constraints record unauthorable for an already-routed board.
+  {
+    const lookupRaw = placementFixture();
+    const lookup = designFingerprintLookup(lookupRaw);
+    assert.equal(lookup.kind, "easyeda-design-fingerprint");
+    assert.equal(lookup.fabricationRelease, false);
+    // The printed value must be exactly what the audit compares against.
+    const boundRecord = placementConstraintFixture(lookupRaw);
+    assert.equal(boundRecord.revision, lookup.fingerprint);
+    const bound = analyzePlacement(
+      lookupRaw,
+      placementEvidenceFixture(boundRecord),
+      { kind: "test-fingerprint-lookup" },
+    );
+    assert.equal(bound.status, PLACEMENT_STATUS.CLEAR);
+    // A schematic is not a valid subject for a PCB fingerprint.
+    assert.throws(() => designFingerprintLookup(schematicFixture()));
+    // A record reconstructed after placement may describe the geometry it
+    // is meant to constrain, so it must never clear silently.
+    const reconstructed = {
+      ...boundRecord,
+      constraintBasis: "RECONSTRUCTED",
+    };
+    const reconstructedReport = analyzePlacement(
+      lookupRaw,
+      placementEvidenceFixture(reconstructed),
+      { kind: "test-reconstructed-basis" },
+    );
+    assert.notEqual(reconstructedReport.status, PLACEMENT_STATUS.CLEAR);
+    assert.equal(reconstructedReport.constraints.basis, "RECONSTRUCTED");
+    assert.match(
+      reconstructedReport.unverified.join(String.fromCharCode(10)),
+      /reconstructed after placement/,
+    );
+    // An undeclared basis is also not clear; the record must state one.
+    const undeclared = { ...boundRecord };
+    delete undeclared.constraintBasis;
+    const undeclaredReport = analyzePlacement(
+      lookupRaw,
+      placementEvidenceFixture(undeclared),
+      { kind: "test-undeclared-basis" },
+    );
+    assert.notEqual(undeclaredReport.status, PLACEMENT_STATUS.CLEAR);
+    assert.equal(undeclaredReport.constraints.basis, null);
+    // The lookup mode must reject flags it would silently ignore.
+    for (const ignored of [["--output", "e.json"], ["--force"], ["--layout-constraints", "x.json"]]) {
+      assert.throws(() => parsePlacementArgs(["--print-fingerprint", ...ignored]));
+    }
+    // The lookup must not demand the record it exists to help author.
+    const lookupArgs = parsePlacementArgs(["--print-fingerprint"]);
+    assert.equal(lookupArgs.printFingerprint, true);
+    assert.equal(lookupArgs.layoutConstraints, undefined);
+    // Auditing still requires its full evidence inputs.
+    assert.throws(() => parsePlacementArgs([]));
+  }
+  // Gate ledger: canonical branches, closure semantics, append-only log.
+  assert.deepEqual(Object.keys(LEDGER_BRANCH_GATES).sort(), [
+    "existing-board-continuation",
+    "existing-board-repair",
+    "existing-schematic-modification",
+    "new-construction",
+    "read-only-review",
+  ]);
+  assert.equal(LEDGER_EXIT.BLOCKED, 2);
+  assert.equal(LEDGER_EXIT.UNVERIFIED, 3);
+  {
+    const ledgerDir = mkdtempSync(path.join(tmpdir(), "easyeda-ledger-tests-"));
+    try {
+      const operationLog = selfTestOperationLog();
+      writeFileSync(path.join(ledgerDir, "companion.json"), "{}\n", "utf8");
+      writeFileSync(path.join(ledgerDir, "binding.json"), "{}\n", "utf8");
+      writeFileSync(path.join(ledgerDir, "late.json"), "{}\n", "utf8");
+      const ledgerOptions = { baseDir: ledgerDir, operationLog };
+
+      const clearedLedger = analyzeLedger(selfTestLedger(), ledgerOptions);
+      assert.equal(clearedLedger.decision, "CLEARED");
+
+      // Bootstrap: the first gate of a from-zero build closes before any
+      // project exists, so a missing projectUuid must not deadlock it.
+      const bootstrapLedger = analyzeLedger(
+        selfTestLedger({
+          projectUuid: undefined,
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+          ],
+        }),
+        ledgerOptions,
+      );
+      assert.equal(bootstrapLedger.decision, "CLEARED");
+
+      // Once a project-binding gate closes, the UUID becomes mandatory.
+      const unboundProjectLedger = analyzeLedger(
+        selfTestLedger({
+          projectUuid: undefined,
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+            { gate: "PROJECT_BOUND", state: "CLOSED", evidence: ["binding.json"] },
+          ],
+        }),
+        ledgerOptions,
+      );
+      assert.notEqual(unboundProjectLedger.decision, "CLEARED");
+
+      // A read-only review writes nothing, so it must clear with no
+      // operation log instead of forcing a false mutation-branch label.
+      const reviewLedger = analyzeLedger(
+        selfTestLedger({
+          branch: "read-only-review",
+          scope: "end-to-end",
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+            {
+              gate: "ACTIVE_REVISION_BOUND",
+              state: "CLOSED",
+              evidence: ["binding.json"],
+            },
+          ],
+        }),
+        { baseDir: ledgerDir },
+      );
+      assert.equal(reviewLedger.decision, "CLEARED");
+
+      // Review binds an existing project, so its UUID stays mandatory.
+      const reviewWithoutProject = analyzeLedger(
+        selfTestLedger({
+          branch: "read-only-review",
+          scope: "end-to-end",
+          projectUuid: undefined,
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+          ],
+        }),
+        { baseDir: ledgerDir },
+      );
+      assert.notEqual(reviewWithoutProject.decision, "CLEARED");
+
+      // Review must not borrow a mutation branch's gates.
+      const reviewClaimingRepairGate = analyzeLedger(
+        selfTestLedger({
+          branch: "read-only-review",
+          scope: "end-to-end",
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+            { gate: "REPAIR_DRC_CLEAR", state: "CLOSED", evidence: ["late.json"] },
+          ],
+        }),
+        { baseDir: ledgerDir },
+      );
+      assert.notEqual(reviewClaimingRepairGate.decision, "CLEARED");
+      // A closed gate must bind an existing artifact.
+      const unboundLedger = analyzeLedger(
+        selfTestLedger({
+          gates: [
+            { gate: "COMPANION_READY", state: "CLOSED", evidence: [] },
+          ],
+        }),
+        ledgerOptions,
+      );
+      assert.notEqual(unboundLedger.decision, "CLEARED");
+
+      // Closing a later gate while an earlier one is open is the observed
+      // failure mode and must never clear.
+      const branchGates = LEDGER_BRANCH_GATES["new-construction"];
+      const outOfOrderLedger = analyzeLedger(
+        selfTestLedger({
+          gates: [
+            { gate: branchGates[0], state: "OPEN", evidence: [] },
+            {
+              gate: branchGates[branchGates.length - 1],
+              state: "CLOSED",
+              evidence: ["late.json"],
+            },
+          ],
+        }),
+        ledgerOptions,
+      );
+      assert.notEqual(outOfOrderLedger.decision, "CLEARED");
+
+      // Two axes: bookkeeping integrity and slice completion. An honest ledger
+      // for work in progress must stay CLEARED, because making an early stop
+      // indistinguishable from a failure would reward claiming false completion.
+      // It must simultaneously report INCOMPLETE so no consumer reads partial
+      // work as closure.
+      const partialEndToEnd = analyzeLedger(
+        selfTestLedger({ scope: "end-to-end" }),
+        ledgerOptions,
+      );
+      assert.equal(partialEndToEnd.decision, "CLEARED");
+      assert.equal(partialEndToEnd.completion, "INCOMPLETE");
+      assert.equal(
+        partialEndToEnd.completionAnalysis.terminalGate,
+        "DESIGN_CLOSURE",
+      );
+      assert.ok(
+        partialEndToEnd.completionAnalysis.remainingGates.includes(
+          "DESIGN_CLOSURE",
+        ),
+      );
+
+      // A narrower scope reaching its own terminal is genuinely complete, not a
+      // truncated end-to-end run.
+      const schematicOnlyGates = LEDGER_BRANCH_GATES["new-construction"]
+        .slice(0, 5)
+        .map((gate) => ({ gate, state: "CLOSED", evidence: ["late.json"] }));
+      const schematicOnlyComplete = analyzeLedger(
+        selfTestLedger({ scope: "schematic-only", gates: schematicOnlyGates }),
+        ledgerOptions,
+      );
+      assert.equal(schematicOnlyComplete.decision, "CLEARED");
+      assert.equal(schematicOnlyComplete.completion, "COMPLETE");
+
+      // A read-only review writes nothing yet still completes at its inventory
+      // gate; it must never need a mutation branch to look finished.
+      const reviewComplete = analyzeLedger(
+        {
+          schemaVersion: 1,
+          branch: "read-only-review",
+          scope: "end-to-end",
+          projectUuid: "project-1",
+          gates: LEDGER_BRANCH_GATES["read-only-review"].map((gate) => ({
+            gate,
+            state: "CLOSED",
+            evidence: ["late.json"],
+          })),
+        },
+        { baseDir: ledgerDir },
+      );
+      assert.equal(reviewComplete.decision, "CLEARED");
+      assert.equal(reviewComplete.completion, "COMPLETE");
+
+      // The terminal gate may not be settled by declaring it inapplicable; that
+      // would let a ledger complete by disowning its own endpoint. Intermediate
+      // gates may legitimately be NOT_APPLICABLE.
+      const terminalDodge = analyzeLedger(
+        selfTestLedger({
+          scope: "schematic-only",
+          gates: [
+            ...schematicOnlyGates.slice(0, 4),
+            { gate: "SCHEMATIC_VERIFIED", state: "NOT_APPLICABLE" },
+          ],
+        }),
+        ledgerOptions,
+      );
+      assert.notEqual(terminalDodge.completion, "COMPLETE");
+
+      // Broken bookkeeping makes completion unknowable rather than passable.
+      const brokenCompletion = analyzeLedger(
+        selfTestLedger({
+          scope: "end-to-end",
+          gates: [{ gate: "COMPANION_READY", state: "CLOSED", evidence: [] }],
+        }),
+        ledgerOptions,
+      );
+      assert.notEqual(brokenCompletion.decision, "CLEARED");
+      assert.equal(brokenCompletion.completion, "INDETERMINATE");
+
+      assert.equal(analyzeOperationLog(operationLog).status, "VERIFIED");
+
+      // Append-only contract: reused ids void the log as evidence.
+      const duplicatedLog = JSON.parse(JSON.stringify(operationLog));
+      duplicatedLog.entries.push({ ...duplicatedLog.entries[0] });
+      assert.notEqual(analyzeOperationLog(duplicatedLog).status, "VERIFIED");
+
+      // A committed write with no semantic readback cannot clear.
+      const unreadbackLog = JSON.parse(JSON.stringify(operationLog));
+      unreadbackLog.entries[0] = {
+        ...unreadbackLog.entries[0],
+        outcome: "COMMITTED",
+        semanticReadback: "",
+      };
+      assert.notEqual(analyzeOperationLog(unreadbackLog).status, "VERIFIED");
+    } finally {
+      rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  }
 
   assert.equal(BASELINE_EXIT.PASS_WITH_EXCEPTIONS, 4);
   assert.equal(EXIT.PASS_WITH_EXCEPTIONS, 4);
@@ -694,6 +984,37 @@ function runTests() {
     formalMissingPlacement.checks.unverified.join("\n"),
     /placement\/assembly closure/,
   );
+  // Formal-review fixtures exercise real gating, so they must supply a
+  // cleared gate ledger just as they supply a cleared placement audit. The
+  // ledger must also be complete: a final audit runs when only the terminal
+  // gate remains, since this audit's own report is that gate's evidence.
+  const clearGateLedgerReport = {
+    schemaVersion: 1,
+    kind: "easyeda-gate-ledger",
+    decision: "CLEARED",
+    completion: "TERMINAL_PENDING",
+    fabricationRelease: false,
+    analysis: {
+      branch: "new-construction",
+      scope: "end-to-end",
+      projectUuid: "self-test",
+      completion: "TERMINAL_PENDING",
+      completionAnalysis: {
+        state: "TERMINAL_PENDING",
+        terminalGate: "DESIGN_CLOSURE",
+        remainingGates: ["DESIGN_CLOSURE"],
+      },
+      gates: [
+        { gate: "COMPANION_READY", state: "CLOSED" },
+      ],
+      blocked: [],
+      unverified: [],
+    },
+  };
+  const formalLedgerOptions = {
+    gateLedgerRecord: clearGateLedgerReport,
+    gateLedger: "<gate-ledger-self-test>",
+  };
   const clearPlacementArtifact = {
     schemaVersion: 2,
     kind: "easyeda-placement-audit",
@@ -743,16 +1064,71 @@ function runTests() {
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: clearPlacementArtifact,
       placementAuditReport: "<placement-self-test>",
     },
     { kind: "formal-review-fixture" },
   );
   assert.equal(formalPlacementClear.decision, BASELINE_DECISIONS.PASS_WITH_EXCEPTIONS);
+  // An honest but unfinished ledger must not let clean upstream checks imply a
+  // finished design. This is the failure this axis exists to catch: before it,
+  // a slice that had closed two of ten gates could still reach a passing audit.
+  const formalIncompleteLedger = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      gateLedger: "<gate-ledger-incomplete-self-test>",
+      gateLedgerRecord: {
+        ...clearGateLedgerReport,
+        completion: "INCOMPLETE",
+        analysis: {
+          ...clearGateLedgerReport.analysis,
+          completion: "INCOMPLETE",
+          completionAnalysis: {
+            state: "INCOMPLETE",
+            terminalGate: "DESIGN_CLOSURE",
+            remainingGates: ["FULL_ROUTING_CLEAR", "DESIGN_CLOSURE"],
+          },
+        },
+      },
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalIncompleteLedger.decision, BASELINE_DECISIONS.UNVERIFIED);
+  assert.match(
+    formalIncompleteLedger.checks.unverified.join("\n"),
+    /has not reached its terminal gate DESIGN_CLOSURE/,
+  );
+  // A ledger predating the completion axis cannot prove its slice finished, so
+  // the absent field is unproven rather than permission.
+  const formalLegacyLedger = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      gateLedger: "<gate-ledger-legacy-self-test>",
+      gateLedgerRecord: {
+        ...clearGateLedgerReport,
+        completion: undefined,
+        analysis: {
+          ...clearGateLedgerReport.analysis,
+          completion: undefined,
+          completionAnalysis: undefined,
+        },
+      },
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalLegacyLedger.decision, BASELINE_DECISIONS.UNVERIFIED);
   const formalLegacyPlacement = analyzeBaseline(
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: { ...clearPlacementArtifact, schemaVersion: 1 },
       placementAuditReport: "<placement-self-test-legacy>",
     },
@@ -763,6 +1139,7 @@ function runTests() {
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: {
         ...clearPlacementArtifact,
         checks: {
@@ -782,6 +1159,7 @@ function runTests() {
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: {
         ...clearPlacementArtifact,
         checks: {
@@ -830,6 +1208,8 @@ function runTests() {
       formalRaw,
       {
         ...parseBaselineArgs([]),
+        ...formalLedgerOptions,
+      ...formalLedgerOptions,
         placementAuditRecord: artifact,
         placementAuditReport: `<placement-self-test-${name}>`,
       },
@@ -841,6 +1221,7 @@ function runTests() {
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: {
         ...clearPlacementArtifact,
         constraints: {
@@ -857,6 +1238,7 @@ function runTests() {
     formalRaw,
     {
       ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
       placementAuditRecord: {
         ...clearPlacementArtifact,
         status: "BLOCKED",
@@ -868,6 +1250,60 @@ function runTests() {
   );
   assert.equal(formalPlacementBlocked.decision, BASELINE_DECISIONS.FAIL);
 
+  // A formal review with clear placement but no gate ledger stays unverified.
+  const formalMissingLedger = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test-no-ledger>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalMissingLedger.decision, BASELINE_DECISIONS.UNVERIFIED);
+  assert.match(
+    formalMissingLedger.checks.unverified.join(String.fromCharCode(10)),
+    /live gate-sequence evidence is missing/,
+  );
+  // A blocked ledger is a hard failure, not a missing-evidence case.
+  const formalBlockedLedger = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test-blocked-ledger>",
+      gateLedgerRecord: {
+        ...clearGateLedgerReport,
+        decision: "BLOCKED",
+        analysis: {
+          ...clearGateLedgerReport.analysis,
+          blocked: ["PCB_SYNC_MATCH was never closed"],
+        },
+      },
+      gateLedger: "<gate-ledger-self-test-blocked>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalBlockedLedger.decision, BASELINE_DECISIONS.FAIL);
+  // A ledger bound to another project cannot clear this one.
+  const formalForeignLedger = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      placementAuditRecord: clearPlacementArtifact,
+      placementAuditReport: "<placement-self-test-foreign-ledger>",
+      gateLedgerRecord: {
+        ...clearGateLedgerReport,
+        analysis: {
+          ...clearGateLedgerReport.analysis,
+          projectUuid: "other-project",
+        },
+      },
+      gateLedger: "<gate-ledger-self-test-foreign>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalForeignLedger.decision, BASELINE_DECISIONS.UNVERIFIED);
   const baseline = analyzeBaseline(
     pcbFixture(),
     parseBaselineArgs([]),
@@ -1053,6 +1489,217 @@ function runTests() {
     analyzeSchematicPresentation(degradedPresentationRaw).blocking,
     true,
   );
+
+  // Symbol placement is the second presentation axis: a page can have clean
+  // wiring and still stack symbols or run them off the sheet.
+  const placementEnvelope = schematicPageEnvelopeFixture();
+  const secondSymbol = (overrides = {}) => ({
+    primitiveId: "c1",
+    designator: "C1",
+    name: "100nF",
+    addIntoPcb: true,
+    footprint: { libraryUuid: "lib", uuid: "fp-c", name: "C0402" },
+    x: 800,
+    y: 600,
+    rotation: 90,
+    bbox: { minX: 780, minY: 580, maxX: 820, maxY: 620 },
+    ...overrides,
+  });
+  const withSecondSymbol = (overrides) => {
+    const raw = schematicFixture();
+    raw.components.push(secondSymbol(overrides));
+    return raw;
+  };
+
+  const clearPlacement = analyzeSchematicPlacement(
+    withSecondSymbol(),
+    placementEnvelope,
+  );
+  assert.equal(clearPlacement.status, "CLEAR");
+  assert.equal(clearPlacement.blocking, false);
+  assert.deepEqual(clearPlacement.unresolved, []);
+
+  // No envelope: stacking is still decidable, page overrun is not, and the
+  // missing bound must read as unscreened rather than cleared.
+  const noEnvelope = analyzeSchematicPlacement(withSecondSymbol(), null);
+  assert.equal(noEnvelope.status, "UNVERIFIED");
+  assert.equal(noEnvelope.blocking, false);
+  assert.equal(noEnvelope.envelopeViolations.length, 0);
+  assert.ok(
+    noEnvelope.unresolved.some((entry) =>
+      entry.includes("no schematic page envelope was declared"),
+    ),
+  );
+
+  const stackedRaw = withSecondSymbol({
+    x: 200,
+    y: 200,
+    bbox: { minX: 160, minY: 160, maxX: 240, maxY: 240 },
+  });
+  const stacked = analyzeSchematicPlacement(stackedRaw, placementEnvelope);
+  assert.equal(stacked.status, "DEGRADED_SYMBOL_PLACEMENT");
+  assert.equal(stacked.blocking, true);
+  assert.equal(stacked.coincidentPoseGroups.length, 1);
+  assert.deepEqual(stacked.coincidentPoseGroups[0].designators, ["U1", "C1"]);
+  assert.equal(stacked.bboxOverlaps.length, 1);
+  // Stacking is blocking without an envelope too, since it needs no page bound.
+  assert.equal(analyzeSchematicPlacement(stackedRaw, null).blocking, true);
+  const offPageRaw = withSecondSymbol({
+    primitiveId: "r1",
+    designator: "R1",
+    name: "10k",
+    footprint: { libraryUuid: "lib", uuid: "fp-r", name: "R0402" },
+    x: 1400,
+    y: 600,
+    rotation: 0,
+    bbox: { minX: 1380, minY: 580, maxX: 1420, maxY: 620 },
+  });
+  const offPage = analyzeSchematicPlacement(offPageRaw, placementEnvelope);
+  assert.equal(offPage.status, "DEGRADED_SYMBOL_PLACEMENT");
+  assert.equal(offPage.envelopeViolations.length, 1);
+  assert.equal(offPage.envelopeViolations[0].designator, "R1");
+  assert.equal(offPage.envelopeViolations[0].originOutside, true);
+  assert.equal(offPage.envelopeViolations[0].extentOutside, true);
+
+  // A symbol whose origin is inside the bound but whose extent is not is still a
+  // page overrun: the reader sees the clipped body and text, not the origin.
+  const extentOnlyRaw = withSecondSymbol({
+    x: 990,
+    bbox: { minX: 970, minY: 580, maxX: 1010, maxY: 620 },
+  });
+  const extentOnly = analyzeSchematicPlacement(extentOnlyRaw, placementEnvelope);
+  assert.equal(extentOnly.status, "DEGRADED_SYMBOL_PLACEMENT");
+  assert.equal(extentOnly.envelopeViolations.length, 1);
+  assert.equal(extentOnly.envelopeViolations[0].originOutside, false);
+  assert.equal(extentOnly.envelopeViolations[0].extentOutside, true);
+
+  // A stale envelope naming another page proves nothing about this one.
+  const staleEnvelope = analyzeSchematicPlacement(offPageRaw, {
+    ...placementEnvelope,
+    documentUuid: "other-page",
+  });
+  assert.equal(staleEnvelope.status, "UNVERIFIED");
+  assert.equal(staleEnvelope.blocking, false);
+  assert.equal(staleEnvelope.envelopeViolations.length, 0);
+  assert.equal(staleEnvelope.pageEnvelope.boundToActiveDocument, false);
+  // Crowding into one corner: no two boxes intersect, no pose repeats, and the
+  // page is still unusable. Review evidence, not a blocking finding.
+  const crowdedRaw = schematicFixture();
+  crowdedRaw.components = Array.from({ length: 9 }, (_, index) => ({
+    primitiveId: `part-${index + 1}`,
+    designator: `U${index + 1}`,
+    name: "Part",
+    addIntoPcb: true,
+    footprint: { libraryUuid: "lib", uuid: `fp-${index + 1}` },
+    x: 20 + index * 5,
+    y: 20 + index * 5,
+    rotation: 0,
+    bbox: {
+      minX: 19 + index * 5,
+      minY: 19 + index * 5,
+      maxX: 20 + index * 5,
+      maxY: 20 + index * 5,
+    },
+  }));
+  const crowded = analyzeSchematicPlacement(crowdedRaw, placementEnvelope);
+  assert.equal(crowded.status, "REVIEW_REQUIRED");
+  assert.equal(crowded.blocking, false);
+  assert.equal(crowded.requiresVisualReview, true);
+  assert.equal(crowded.metrics.clusteredIntoCorner, true);
+
+  // Unavailable BBox readback leaves crowding and containment unscreened rather
+  // than clear, since the beta BBox call can fail per primitive.
+  const missingBbox = analyzeSchematicPlacement(
+    withSecondSymbol({ bbox: null }),
+    placementEnvelope,
+  );
+  assert.equal(missingBbox.status, "UNVERIFIED");
+  assert.deepEqual(missingBbox.unresolvedBboxDesignators, ["C1"]);
+
+  // Non-finite coordinates must not be coerced to the page origin.
+  const missingPosition = analyzeSchematicPlacement(
+    withSecondSymbol({ x: null }),
+    placementEnvelope,
+  );
+  assert.equal(missingPosition.status, "UNVERIFIED");
+  assert.deepEqual(missingPosition.missingPositionDesignators, ["C1"]);
+  assert.equal(missingPosition.coincidentPoseGroups.length, 0);
+  // Baseline wiring: both blocking placement signatures must reach the audit
+  // decision, and a clean wiring screen must not absorb them.
+  const placementOptions = {
+    ...parseBaselineArgs([]),
+    schematicPageEnvelopeRecord: placementEnvelope,
+  };
+  const stackedBaseline = analyzeBaseline(stackedRaw, placementOptions, {
+    kind: "test",
+  });
+  assert.equal(stackedBaseline.decision, BASELINE_DECISIONS.FAIL);
+  assert.equal(
+    stackedBaseline.checks.symbolPlacement.status,
+    "DEGRADED_SYMBOL_PLACEMENT",
+  );
+  assert.ok(
+    stackedBaseline.failures.some((entry) =>
+      entry.includes("share coordinates instead of holding deliberate poses"),
+    ),
+  );
+  assert.equal(stackedBaseline.checks.presentation.status, "CLEAR");
+
+  const offPageBaseline = analyzeBaseline(offPageRaw, placementOptions, {
+    kind: "test",
+  });
+  assert.equal(offPageBaseline.decision, BASELINE_DECISIONS.FAIL);
+  assert.ok(
+    offPageBaseline.failures.some((entry) =>
+      entry.includes("outside the declared drawable page area"),
+    ),
+  );
+
+  // An absent envelope keeps an otherwise clean schematic unverified.
+  const noEnvelopeBaseline = analyzeBaseline(
+    schematicFixture(),
+    parseBaselineArgs([]),
+    { kind: "test" },
+  );
+  assert.equal(noEnvelopeBaseline.decision, BASELINE_DECISIONS.UNVERIFIED);
+  assert.ok(
+    noEnvelopeBaseline.unverified.some((entry) =>
+      entry.includes("no schematic page envelope was declared"),
+    ),
+  );
+  // Envelope record contract. Each rejection is a case where accepting the
+  // record would let a guessed or mismatched bound produce a blocking finding.
+  const validEnvelopeRecord = {
+    kind: "easyeda-schematic-page-envelope",
+    schemaVersion: 1,
+    unit: "10mil",
+    documentUuid: "sch",
+    source: "A4 landscape frame minus title block",
+    envelope: { minX: 0, minY: 0, maxX: 1000, maxY: 800 },
+  };
+  assert.equal(
+    validateSchematicPageEnvelope(validEnvelopeRecord, "/tmp/envelope.json")
+      .envelope.maxX,
+    1000,
+  );
+  for (const [mutation, pattern] of [
+    [{ kind: "wrong" }, /easyeda-schematic-page-envelope/],
+    [{ schemaVersion: 2 }, /schemaVersion 1/],
+    [{ unit: "mil" }, /10mil/],
+    [{ documentUuid: "" }, /documentUuid/],
+    [{ source: "" }, /requires a source/],
+    [{ envelope: { minX: 100, minY: 0, maxX: 100, maxY: 800 } }, /maxX > minX/],
+    [{ envelope: { minX: 0, minY: 0, maxX: 1000 } }, /finite maxY/],
+  ]) {
+    assert.throws(
+      () =>
+        validateSchematicPageEnvelope(
+          { ...validEnvelopeRecord, ...mutation },
+          null,
+        ),
+      pattern,
+    );
+  }
 
   const baselinePreserveSilosFixture = pcbFixture();
   baselinePreserveSilosFixture.pours[0].preserveSilos = true;
@@ -1731,6 +2378,9 @@ function runTests() {
         ...parseBaselineArgs([]),
         componentEvidenceRecord: selectionRecord,
         componentEvidenceBaseDir: tempDir,
+        // The page envelope is required for any non-unverified schematic result,
+        // so supply it here to keep this case about component evidence.
+        schematicPageEnvelopeRecord: schematicPageEnvelopeFixture(),
       },
       { kind: "test" },
     );

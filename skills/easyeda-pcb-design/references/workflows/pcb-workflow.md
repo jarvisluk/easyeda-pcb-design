@@ -54,13 +54,22 @@ Before production PCB creation or continuation, require:
    canaries through the joint gate in `../layout/constraint-planning.md`;
 4. close every cross-constraint and specialized planning gate, freeze outline,
    stackup, and floorplan together, and run
-   `python3 scripts/easyeda_constraint_lint.py --record <layout-constraints.json>`;
+   `python3 scripts/lints/easyeda_constraint_lint.py --record <layout-constraints.json>`;
 5. require the derived result `CLEARED_FOR_PLACEMENT`; `BLOCKED`, `UNRESOLVED`,
    or `STALE` stops production placement and routing;
 6. require manufacturing and native schematic/PCB synchronization `MATCH`
    before routing, or the strict `PCB_SYNC_VERIFIED_CACHE_EXCEPTION` defined in
    `live-build-gates.md`: populate and save/reopen a new PCB, or bind and
-   save/reopen the existing PCB without repopulating it.
+   save/reopen the existing PCB without repopulating it;
+7. prove component-count conservation across synchronization. After
+   `importChanges()` or `setNetlist()`, save/reopen and run
+   `easyeda_identity_preflight.mjs --expected-part-count <schematic part count>`.
+   A PCB that received fewer components than the schematic declares is a failed
+   synchronization, not a partial success: stop, classify why the missing
+   components were dropped, and reclose this gate before placement or routing.
+   Unwired or label-only schematic connectivity is a common cause, so fix the
+   schematic and reissue the handoff rather than hand-placing the missing parts
+   in the PCB.
 
 If the handoff is missing or stale, stop and return the missing item to the
 schematic scope. Do not infer critical intent from net names or silently repair
@@ -158,6 +167,18 @@ pass the routing canary in
 new route in each unproven class as a canary while preserving existing geometry.
 During existing-board repair, treat each bounded replacement as its own canary
 and require semantic readback before expansion.
+
+Before autorouting or copper generation, prove the board outline is one closed
+contour on the board-outline layer. Loose segments that merely look like a
+rectangle are not an outline: the autorouter and the pour generator both need a
+defined board region, and unclosed geometry is a common cause of an autorouter
+that reports every net failed. Confirm closure by reading back outline
+primitives and checking that their endpoints join into a single loop, or by
+inspecting the exported Gerber outline. The baseline audit counts outline
+primitives but does not prove closure or non-self-intersection, so record that
+check separately. If the outline cannot be closed, stop and resolve it; do not
+classify an autorouter failure on an unclosed board as an API capability
+failure, and do not use it to justify skipping routing.
 
 1. Reserve every hard corridor, reference region, return transition, package
    escape, power loop, antenna exclusion, and tuning region before committing
