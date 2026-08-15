@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "kind": "easyeda-transaction-plan",
+  "mode": "placement",
+  "transactionId": "fixture-placement-001",
+  "gate": "PLACEMENT_CLEAR_FOR_ROUTING",
+  "attemptFamily": "fixture-placement",
+  "attemptIndex": 1,
+  "targetClass": "NON_PRODUCTION_PROBE",
+  "projectUuid": "fixture-project",
+  "pcbUuid": "fixture-pcb",
+  "baselineFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifactRoot": "../..",
+  "operations": [
+    {
+      "operationId": "move-u1",
+      "type": "component.modify",
+      "primitiveId": "component-u1",
+      "designator": "U1",
+      "expectedBefore": { "x": 100, "y": 200, "rotation": 0, "layerEnum": "TOP", "primitiveLock": false },
+      "changes": { "x": 120, "y": 220, "rotation": 90, "layerEnum": "TOP", "primitiveLock": false }
+    }
+  ],
+  "rollback": { "strategy": "RESTORE_CHECKPOINT" },
+  "acceptance": {
+    "expectedDeltas": { "lines": 0, "vias": 0, "components": 0, "polylines": 0, "pours": 0, "poured": 0 },
+    "requireDetailedDrc": true,
+    "requirePlacementClearAfter": true,
+    "requireBaselineRecoveryOnReject": true
+  },
+  "controls": {
+    "budgetCheck": "evidence/readbacks/budget.json",
+    "checkpointCheck": "evidence/readbacks/checkpoint.json",
+    "authorizationRecord": "evidence/readbacks/authorization.json",
+    "gateLedgerCheck": "evidence/readbacks/gate-ledger.json",
+    "postPlacementReport": "evidence/audits/placement-after.json",
+    "operationLog": "evidence/readbacks/operation-log.json"
+  }
+}

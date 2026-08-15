@@ -70,7 +70,14 @@ after a documentation-only edit.
 ```bash
 node tests/lints/skill_reference_contract_lint.mjs
 node tests/lints/skill_reference_contract_lint.mjs --self-test
+node tests/lints/live_tool_library_lint.mjs
+node tests/lints/live_tool_library_lint.mjs --self-test
 ```
+
+When validating migration from a historical task, add
+`--legacy-dir <task-tools-directory> --json`. The audit is read-only: it counts
+route/repair scripts and requires every detected mutating EasyEDA API call to
+have an explicit transaction, runtime, dedicated, or refused disposition.
 
 `STALE_OPTION` and `MISSING_SCRIPT` mean a command block no longer matches its
 script. `ORPHAN_TOKEN` means prose names a status no script implements: either
@@ -84,6 +91,7 @@ Then run the deterministic suites:
 
 ```bash
 node tests/audits/easyeda_audit_tests.mjs
+node tests/live/easyeda_tools_tests.mjs
 python3 tests/calc/pcb_calc_tests.py
 node skills/easyeda-pcb-design/scripts/lints/requirements_baseline_lint.mjs --self-test
 node skills/easyeda-pcb-design/scripts/lints/component_selection_evidence.mjs --self-test
@@ -94,8 +102,7 @@ node skills/easyeda-pcb-design/scripts/live/easyeda_gate_ledger.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_execution_budget.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_native_checkpoint.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/inspect_current_state.mjs --self-test
-node skills/easyeda-pcb-design/scripts/live/route_transaction.mjs --self-test
-node skills/easyeda-pcb-design/scripts/live/repair_transaction.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_transaction.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/verify_gate.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_placement_audit.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_crystal_clock_audit.mjs --self-test

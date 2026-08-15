@@ -70,8 +70,9 @@ requirements, handoff, and change propagation. For live writes also read
 ## Enforce live-operation boundaries
 
 Use the `easyeda-api` skill/companion for live EasyEDA work. Read
-[api-map.md](references/api/api-map.md), the exact companion class/method docs,
-and the applicable live branch before writes. First run:
+[api-map.md](references/api/api-map.md),
+[tool-library.md](references/api/tool-library.md), the exact companion
+class/method docs, and the applicable live branch before writes. First run:
 
 ```bash
 node scripts/live/check_companion.mjs
@@ -105,8 +106,8 @@ Every live mutation requires:
 - save/switch/reopen, exact-delta readback, repeated detailed DRC, and gate
   verification after the transaction.
 
-Use JSON plans with `route_transaction.mjs` and `repair_transaction.mjs` instead
-of per-attempt browser scripts. They must stop at
+Use schema-2 JSON plans with `easyeda_transaction.mjs` for route, repair,
+placement, outline, and copper instead of per-attempt browser scripts. It must stop at
 `TRANSACTION_APPLIED_PENDING_REOPEN`; collect current state with
 `inspect_current_state.mjs --with-drc`, then require `TRANSACTION_VERIFIED` from
 `verify_gate.mjs` before advancing. Fast no-DRC inspection is preflight only.

@@ -15,7 +15,7 @@
 - Revision budget and manifest
 - Execution budget and stop evidence
 - Native checkpoints
-- Data-driven route and repair transactions
+- Data-driven transactions
 - Routing and copper canaries
 - Failure escalation
 - Cleanup authorization
@@ -611,96 +611,19 @@ non-production probe and comparing semantic content, counts, and native outline
 identity. Do not describe the checkpoint as a verified rollback path before
 that restore check passes.
 
-## Data-driven route and repair transactions
+## Data-driven transactions
 
-Represent each bounded route or repair as JSON and run the shared executors;
-do not generate one-off browser scripts for every line or via. A plan binds the
-transaction and attempt identity, target class, project/PCB UUIDs, baseline
-fingerprint, net, exact line/via/delete operations, expected deltas, and the
-budget, checkpoint, authorization, ledger, placement, and schema-2 operation-log
-paths. Every control path is relative to the plan directory and may not escape
-it. The runner appends an `UNKNOWN` timed application entry; `verify_gate.mjs`
-appends the saved/reopened `ACCEPTED`, `REJECTED`, or still-`UNKNOWN` resolution.
+Use schema-2 JSON plans and the common runner for route, repair, placement,
+outline, and copper work. Read
+[tool-library.md](../api/tool-library.md) for the stable command catalog,
+operation registry, plan schema, control paths, rollback strategies, and exact
+verification contract. Never generate per-net or per-pass executables.
 
-```json
-{
-  "schemaVersion": 1,
-  "kind": "easyeda-route-transaction-plan",
-  "transactionId": "route-gpio8-001",
-  "gate": "ROUTING_CANARY_CLEAR",
-  "attemptFamily": "gpio8-route",
-  "attemptIndex": 1,
-  "targetClass": "PRODUCTION",
-  "projectUuid": "exact-project-uuid",
-  "pcbUuid": "exact-pcb-uuid",
-  "baselineFingerprint": "sha256:<64-hex>",
-  "net": "GPIO8",
-  "creates": {
-    "lines": [{
-      "layerEnum": "TOP",
-      "startX": 100,
-      "startY": 100,
-      "endX": 200,
-      "endY": 100,
-      "lineWidth": 8,
-      "primitiveLock": false
-    }],
-    "vias": []
-  },
-  "deletes": {"lineIds": [], "viaIds": []},
-  "acceptance": {
-    "expectedLineDelta": 1,
-    "expectedViaDelta": 0,
-    "requireDetailedDrc": true
-  },
-  "controls": {
-    "budgetCheck": "evidence/readbacks/execution-budget-check.json",
-    "checkpointCheck": "evidence/readbacks/pre-route-restore-check.json",
-    "authorizationRecord": "evidence/readbacks/route-authorization.json",
-    "gateLedgerCheck": "evidence/readbacks/gate-ledger-check.json",
-    "placementReport": "evidence/audits/placement-closure.json",
-    "operationLog": "evidence/readbacks/operation-log.json"
-  }
-}
-```
-
-For repair, change `kind` to `easyeda-repair-transaction-plan` and list only
-the exact line/via IDs owned by the bounded transaction under `deletes`.
-The authorization path names a schema-1 `easyeda-operation-authorization`
-record containing `authorized: true`, the same `transactionId` and
-`targetClass`, `authorizationProfile` (`USER_OWNED` or `AI_DEDICATED`), the
-user's exact nonempty `userWords`, and `authorizedAt`. This binds permission to
-one plan. For ordinary work already owned by the selected branch, `userWords`
-may quote the task request that authorized the build; a high-risk operation
-still requires the separate operation-specific wording defined above.
-
-```bash
-node scripts/live/route_transaction.mjs --plan <project>/route-plan.json \
-  --output <project>/evidence/readbacks/route-plan-check.json
-node scripts/live/route_transaction.mjs --plan <project>/route-plan.json \
-  --execute --output <project>/evidence/readbacks/route-result.json
-```
-
-Use `repair_transaction.mjs` for a deletion or replacement; route plans cannot
-delete. `--execute` performs a fast fresh-state preflight, requires exact UUID
-and fingerprint identity, applies the bounded API calls, saves, and stops at
-`TRANSACTION_APPLIED_PENDING_REOPEN`. Save/switch/reopen, collect full current
-state, and verify the gate:
-
-```bash
-node scripts/live/inspect_current_state.mjs --with-drc \
-  --output <project>/evidence/readbacks/post-route-state.json
-node scripts/live/verify_gate.mjs --plan <project>/route-plan.json \
-  --before <project>/evidence/readbacks/pre-route-state.json \
-  --after <project>/evidence/readbacks/post-route-state.json \
-  --transaction-result <project>/evidence/readbacks/route-result.json \
-  --output <project>/evidence/readbacks/route-gate-check.json
-```
-
-Only `TRANSACTION_VERIFIED` may advance a gate. `TRANSACTION_UNVERIFIED` stops
-for missing/stale evidence; `TRANSACTION_REJECTED` stops and triggers the
-declared inverse or verified restore path. Use fast inspection only for
-preflight; use `--with-drc` at canary and gate boundaries.
+The runner appends the timed application entry and stops at
+`TRANSACTION_APPLIED_PENDING_REOPEN`. Save/switch/reopen, capture schema-2
+current state with repeated DRC, rerun placement containment, and require
+`TRANSACTION_VERIFIED`. `TRANSACTION_UNVERIFIED` or `TRANSACTION_REJECTED`
+stops expansion and invokes the declared cleanup or restore policy.
 
 ## Routing and copper canaries
 

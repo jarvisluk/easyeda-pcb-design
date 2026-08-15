@@ -5,21 +5,15 @@
  * Run after saving, switching away, and reopening the target documents.
  */
 
-import { writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-
 import {
-  fetchJson,
-  findBridge,
   notAFabricationReleaseMessage,
-  resolveSafeOutputPath,
-  resolveWindow,
 } from "../lib/audit_common.mjs";
 import {
   collectNativeComparison,
   identityContractIssues,
   summarizeNativeComparison,
 } from "../audits/easyeda_netlist_compare.mjs";
+import { executeEasyedaCode, isMain, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, MISMATCH: 2, UNVERIFIED: 3 });
 const DOCUMENT_TYPE = Object.freeze({ SCHEMATIC_PAGE: 1, PCB: 3 });
@@ -376,20 +370,13 @@ return {
 `;
 }
 
-async function collectCode(bridge, windowId, code, label) {
-  const response = await fetchJson(
-    `http://127.0.0.1:${bridge.port}/execute`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code, windowId }),
-    },
-    35000,
-  );
+async function collectCode(bridgePort, windowId, code, label) {
+  const call = await executeEasyedaCode({ code, bridgePort, windowId, timeoutMs: 35_000 });
+  const { response } = call;
   if (!response.success || !response.result) {
     throw new Error(response.error || `${label} collection failed`);
   }
-  return response.result;
+  return { ...call, result: response.result };
 }
 
 function stableFixture(uniqueId = "gge1") {
@@ -438,21 +425,21 @@ async function main() {
     process.stdout.write("easyeda identity preflight self-test passed\n");
     return;
   }
-  const bridge = await findBridge(options.bridgePort);
-  const windowId = await resolveWindow(bridge, options.windowId);
-  const schematic = await collectCode(
-    bridge,
-    windowId,
+  const schematicCall = await collectCode(
+    options.bridgePort,
+    options.windowId,
     schematicCollectorCode(options.schematicPageUuid),
     "schematic identity",
   );
+  const { bridge, windowId } = schematicCall;
+  const schematic = schematicCall.result;
   const pcb = options.pcbUuid
-    ? await collectCode(
-        bridge,
+    ? (await collectCode(
+        bridge.port,
         windowId,
         pcbCollectorCode(options.pcbUuid),
         "PCB internal identity",
-      )
+      )).result
     : undefined;
   if (pcb && pcb.project.uuid !== schematic.project.uuid) {
     throw new Error("schematic and PCB belong to different projects");
@@ -491,10 +478,7 @@ async function main() {
   };
   const text = `${JSON.stringify(report, null, 2)}\n`;
   if (options.output) {
-    const outputPath = resolveSafeOutputPath(options.output, {
-      force: options.force,
-    });
-    await writeFile(outputPath, text, "utf8");
+    await writeNewJson(options.output, report, { force: options.force });
   }
   process.stdout.write(text);
   process.exitCode =
@@ -505,9 +489,7 @@ async function main() {
         : EXIT.MISMATCH;
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = EXIT.ERROR;

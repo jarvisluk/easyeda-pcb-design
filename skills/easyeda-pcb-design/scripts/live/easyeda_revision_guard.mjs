@@ -4,16 +4,9 @@
  * Read-only document-tree and revision-budget guard for EasyEDA PCB creation.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-
-import {
-  fetchJson,
-  findBridge,
-  resolveSafeOutputPath,
-  resolveWindow,
-} from "../lib/audit_common.mjs";
+import { executeEasyedaCode, isMain, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, BLOCKED: 2, UNVERIFIED: 3 });
 const ROLES = new Set(["working", "rollback", "diagnostic", "final"]);
@@ -334,20 +327,13 @@ return {
 `;
 }
 
-async function collectTree(bridge, windowId) {
-  const response = await fetchJson(
-    `http://127.0.0.1:${bridge.port}/execute`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: treeCollectorCode(), windowId }),
-    },
-    35000,
-  );
+async function collectTree(bridgePort, windowId) {
+  const call = await executeEasyedaCode({ code: treeCollectorCode(), bridgePort, windowId, timeoutMs: 35_000 });
+  const { response } = call;
   if (!response.success || !response.result) {
     throw new Error(response.error || "document tree collection failed");
   }
-  return response.result;
+  return { ...call, result: response.result };
 }
 
 function selfTestFixtures() {
@@ -434,10 +420,9 @@ async function main() {
   if (options.treeFile) {
     tree = await readJsonInput(options.treeFile);
   } else {
-    const bridge = await findBridge(options.bridgePort);
-    const windowId = await resolveWindow(bridge, options.windowId);
-    tree = await collectTree(bridge, windowId);
-    bridgeInfo = { port: bridge.port, windowId, health: bridge.health };
+    const call = await collectTree(options.bridgePort, options.windowId);
+    tree = call.result;
+    bridgeInfo = { port: call.bridge.port, windowId: call.windowId, health: call.bridge.health };
   }
   const intent = options.intentRole
     ? {
@@ -461,10 +446,7 @@ async function main() {
   };
   const text = `${JSON.stringify(report, null, 2)}\n`;
   if (options.output) {
-    const outputPath = resolveSafeOutputPath(options.output, {
-      force: options.force,
-    });
-    await writeFile(outputPath, text, "utf8");
+    await writeNewJson(options.output, report, { force: options.force });
   }
   process.stdout.write(text);
   process.exitCode =
@@ -475,9 +457,7 @@ async function main() {
         : EXIT.BLOCKED;
 }
 
-const isMain =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = EXIT.ERROR;

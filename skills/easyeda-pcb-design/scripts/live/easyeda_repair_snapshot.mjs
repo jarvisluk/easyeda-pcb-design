@@ -1,14 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
-
-import {
-  fetchJson,
-  findBridge,
-  resolveSafeOutputPath,
-  resolveWindow,
-} from "../lib/audit_common.mjs";
+import { cliFailure, executeEasyedaCode, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const PCB_DOCUMENT_TYPE = 3;
 
@@ -209,24 +202,16 @@ async function main() {
     process.stdout.write("easyeda repair semantic capture self-test passed\n");
     return;
   }
-  const outputPath = resolveSafeOutputPath(options.output, false);
-  const bridge = await findBridge(options.bridgePort);
-  const window = await resolveWindow(bridge, options.windowId);
-  const response = await fetchJson(
-    `http://127.0.0.1:${bridge.port}/execute`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: collectorCode(), windowId: window.windowId }),
-    },
-    120_000,
-  );
+  const call = await executeEasyedaCode({
+    code: collectorCode(), bridgePort: options.bridgePort, windowId: options.windowId,
+  });
+  const { response } = call;
   if (!response.success) throw new Error(response.error || "EasyEDA execution failed");
   const snapshot = {
     ...response.result,
-    bridge: { port: bridge.port, windowId: response.windowId || window.windowId },
+    bridge: { port: call.bridge.port, windowId: response.windowId || call.windowId },
   };
-  await writeFile(outputPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  const outputPath = await writeNewJson(options.output, snapshot);
   process.stdout.write(`${JSON.stringify({
     output: outputPath,
     project: snapshot.project,
@@ -242,6 +227,5 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+  cliFailure(error, "easyeda-existing-board-repair-semantic-capture");
 });

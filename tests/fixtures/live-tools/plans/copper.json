@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "kind": "easyeda-transaction-plan",
+  "mode": "copper",
+  "transactionId": "fixture-copper-001",
+  "gate": "COPPER_CANARY_CLEAR",
+  "attemptFamily": "fixture-copper",
+  "attemptIndex": 1,
+  "targetClass": "NON_PRODUCTION_PROBE",
+  "projectUuid": "fixture-project",
+  "pcbUuid": "fixture-pcb",
+  "baselineFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifactRoot": "../..",
+  "operations": [
+    { "operationId": "delete-premature-pour", "type": "pour.delete", "primitiveId": "pour-1" },
+    { "operationId": "delete-derived-poured", "type": "poured.delete", "primitiveId": "poured-1" }
+  ],
+  "rollback": { "strategy": "RESTORE_CHECKPOINT" },
+  "acceptance": {
+    "expectedDeltas": { "lines": 0, "vias": 0, "components": 0, "polylines": 0, "pours": -1, "poured": -1 },
+    "requireDetailedDrc": true,
+    "requirePlacementClearAfter": true,
+    "requireBaselineRecoveryOnReject": true
+  },
+  "controls": {
+    "budgetCheck": "evidence/readbacks/budget.json",
+    "checkpointCheck": "evidence/readbacks/checkpoint.json",
+    "authorizationRecord": "evidence/readbacks/authorization.json",
+    "gateLedgerCheck": "evidence/readbacks/gate-ledger.json",
+    "prePlacementReport": "evidence/audits/placement-before.json",
+    "postPlacementReport": "evidence/audits/placement-after.json",
+    "operationLog": "evidence/readbacks/operation-log.json"
+  }
+}

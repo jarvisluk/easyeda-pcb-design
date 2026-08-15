@@ -343,7 +343,7 @@ gate before further routing.
 - `PCB_Drc` and `PCB_Document`.
 - `PCB_ManufactureData` for manufacturing output only after design validation.
 
-Shared route/repair plans use the documented signatures exactly:
+Registered transaction operations use the documented signatures exactly:
 
 - `pcb_PrimitiveLine.create(net, layer, startX, startY, endX, endY,
   lineWidth?, primitiveLock?)`;
@@ -353,8 +353,9 @@ Shared route/repair plans use the documented signatures exactly:
   type also accepts arrays;
 - `pcb_Document.save()` must return `true`, followed by switch/reopen readback.
 
-Use `route_transaction.mjs` and `repair_transaction.mjs` to generate these calls
-from validated JSON. Copper layers are enum names (`TOP`, `BOTTOM`, or
+Use `easyeda_transaction.mjs` to generate these calls from validated schema-2
+JSON. The complete operation and safety contract is in
+[tool-library.md](tool-library.md). Copper layers are enum names (`TOP`, `BOTTOM`, or
 `INNER_1`…`INNER_30`) resolved through `EPCB_LayerId`; via types are `VIA`,
 `BLIND`, or `SUTURE` resolved through `EPCB_PrimitiveViaType`. Do not substitute
 numeric layer guesses or one-off per-attempt scripts.

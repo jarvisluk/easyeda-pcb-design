@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 
-import { writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-
 import { collectorCode } from "../audits/easyeda_design_audit.mjs";
 import {
   designFingerprint,
-  fetchJson,
-  findBridge,
   notAFabricationReleaseMessage,
-  resolveSafeOutputPath,
-  resolveWindow,
 } from "../lib/audit_common.mjs";
+import {
+  cliFailure,
+  executeEasyedaCode,
+  isMain,
+  writeNewJson,
+} from "./lib/tool_runtime.mjs";
 
 function usage() {
   return `Usage:
@@ -73,8 +72,22 @@ function summarizeCurrentState(raw, withDrc = false) {
     (total, item) => total + (Number.isFinite(item?.solidFillCount) ? item.solidFillCount : 0),
     0,
   );
+  const collections = {
+    lines: raw.lines || [],
+    vias: raw.vias || [],
+    components: raw.components || [],
+    polylines: raw.polylines || [],
+    pours: raw.pours || [],
+    poured: raw.poured || [],
+  };
+  const primitiveIndex = Object.fromEntries(
+    Object.entries(collections).map(([kind, items]) => [
+      kind,
+      items.map((item) => item.primitiveId || null).filter(Boolean).sort(),
+    ]),
+  );
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "easyeda-current-state",
     status: "CURRENT_STATE_CAPTURED",
     fabricationRelease: false,
@@ -91,6 +104,7 @@ function summarizeCurrentState(raw, withDrc = false) {
       polylines: (raw.polylines || []).length,
       vias: (raw.vias || []).length,
       sourcePours: sourcePours.length,
+      poured: (raw.poured || []).length,
       generatedPoured: generatedFillCount,
     },
     axes: {
@@ -98,10 +112,14 @@ function summarizeCurrentState(raw, withDrc = false) {
       boardOutline: outline,
       copper: {
         sourcePourIds: sourcePours.map((item) => item.primitiveId || null),
-        generatedPouredIds: sourcePours.flatMap((item) => item.solidFillIds || []),
+        generatedPouredIds: [
+          ...(raw.poured || []).map((item) => item.primitiveId || null),
+          ...sourcePours.flatMap((item) => item.solidFillIds || []),
+        ].filter(Boolean),
       },
       drc: withDrc ? { status: "CAPTURED", raw: raw.drc, evidence: raw.drcEvidence } : { status: "NOT_RUN" },
     },
+    primitiveIndex,
     raw,
   };
 }
@@ -112,7 +130,7 @@ function selfTest() {
     project: { uuid: "project-1" },
     document: { uuid: "pcb-1", documentType: 3 },
     boardOutlineLayerId: 11,
-    components: [], pads: [], lines: [], arcs: [], segments: [], vias: [], pours: [],
+    components: [], pads: [], lines: [], arcs: [], segments: [], vias: [], pours: [], poured: [],
     polylines: [{ primitiveId: "outline-1", layer: 11, locked: true, closed: true, points: [[0, 0], [10, 0], [10, 10], [0, 0]] }],
   };
   const result = summarizeCurrentState(raw, false);
@@ -120,35 +138,28 @@ function selfTest() {
     throw new Error("native outline was absent from current-state summary");
   }
   if (result.axes.drc.status !== "NOT_RUN") throw new Error("read-only fast state unexpectedly claimed DRC");
-  process.stdout.write(`${JSON.stringify({ status: result.status, drc: result.axes.drc.status })}\n`);
+  if (!Array.isArray(result.primitiveIndex.poured)) throw new Error("poured primitive index is absent");
+  process.stdout.write(`${JSON.stringify({ status: result.status, schemaVersion: result.schemaVersion, drc: result.axes.drc.status })}\n`);
 }
 
 async function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return selfTest();
-    const bridge = await findBridge(options.bridgePort || undefined);
-    const windowId = await resolveWindow(bridge, options.windowId || undefined);
-    const response = await fetchJson(
-      `http://127.0.0.1:${bridge.port}/execute`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: collectorCode({ includeDrc: options.withDrc }), windowId }),
-      },
-      120_000,
-    );
+    const { response } = await executeEasyedaCode({
+      code: collectorCode({ includeDrc: options.withDrc }),
+      bridgePort: options.bridgePort,
+      windowId: options.windowId,
+    });
     if (!response.success) throw new Error(response.error || "EasyEDA current-state readback failed");
     const result = summarizeCurrentState(response.result, options.withDrc);
-    const output = resolveSafeOutputPath(options.output);
-    await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx" });
+    const output = await writeNewJson(options.output, result);
     process.stdout.write(`${JSON.stringify({ status: result.status, fingerprint: result.fingerprint, output })}\n`);
   } catch (error) {
-    process.stderr.write(`${JSON.stringify({ error: error.message, kind: "easyeda-current-state", fabricationRelease: false }, null, 2)}\n`);
-    process.exitCode = 1;
+    cliFailure(error, "easyeda-current-state");
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (isMain(import.meta.url)) await main();
 
 export { parseArgs, summarizeCurrentState };

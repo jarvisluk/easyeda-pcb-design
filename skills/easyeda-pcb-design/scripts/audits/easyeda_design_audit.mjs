@@ -818,6 +818,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
   const polylines = await eda.pcb_PrimitivePolyline.getAll();
   const vias = await eda.pcb_PrimitiveVia.getAll();
   const pours = await eda.pcb_PrimitivePour.getAll();
+  const poured = await eda.pcb_PrimitivePoured.getAll();
 
   const lineData = lines
     .map((line) => ({
@@ -825,6 +826,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       net: value(line, "getState_Net", "net") || "",
       layer: value(line, "getState_Layer", "layer"),
       lineWidth: value(line, "getState_LineWidth", "lineWidth"),
+      locked: Boolean(value(line, "getState_PrimitiveLock", "primitiveLock")),
       startX: value(line, "getState_StartX", "startX"),
       startY: value(line, "getState_StartY", "startY"),
       endX: value(line, "getState_EndX", "endX"),
@@ -906,6 +908,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
         value(via, "getState_DesignRuleBlindViaName", "designRuleBlindViaName") || null,
       solderMaskExpansion:
         value(via, "getState_SolderMaskExpansion", "solderMaskExpansion") || null,
+      locked: Boolean(value(via, "getState_PrimitiveLock", "primitiveLock")),
     }))
     .filter((via) => Number.isFinite(via.x) && Number.isFinite(via.y));
   const pourData = [];
@@ -950,6 +953,11 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       .filter(Boolean),
     });
   }
+  const pouredData = poured.map((item) => ({
+    primitiveId: value(item, "getState_PrimitiveId", "primitiveId"),
+    net: value(item, "getState_Net", "net") || "",
+    layer: value(item, "getState_Layer", "layer"),
+  }));
   const componentData = [];
   const padData = [];
   for (const component of components) {
@@ -971,6 +979,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       x: value(component, "getState_X", "x"),
       y: value(component, "getState_Y", "y"),
       rotation: value(component, "getState_Rotation", "rotation") || 0,
+      locked: Boolean(value(component, "getState_PrimitiveLock", "primitiveLock")),
       bbox: bbox || null,
     });
     const pins = typeof component.getAllPins === "function"
@@ -1054,6 +1063,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
         pourData.map((pour) => [pour.primitiveId || JSON.stringify(pour), pour]),
       ).values(),
     ],
+    poured: pouredData,
     drc,
     drcEvidence: {
       schemaVersion: 1,

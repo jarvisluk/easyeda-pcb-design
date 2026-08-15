@@ -1,45 +1,54 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { collectorCode } from "../../audits/easyeda_design_audit.mjs";
 import {
   designFingerprint,
-  fetchJson,
-  findBridge,
   notAFabricationReleaseMessage,
-  resolveSafeOutputPath,
-  resolveWindow,
 } from "../../lib/audit_common.mjs";
-import { collectorCode } from "../../audits/easyeda_design_audit.mjs";
 import { analyzeOperationLog } from "../easyeda_gate_ledger.mjs";
-import { browserTransactionCode, stableHash, validateTransactionPlan } from "./transaction_plan.mjs";
+import { expectedDeltas } from "./operation_registry.mjs";
+import {
+  browserTransactionCode,
+  stableHash,
+  validateTransactionPlan,
+} from "./transaction_plan.mjs";
+import {
+  executeEasyedaCode,
+  readJsonFile,
+  resolveArtifactRoot,
+  resolveContainedPath,
+  writeContainedJson,
+} from "./tool_runtime.mjs";
 
-const PLACEMENT_REQUIRED_AXES = [
+const PLACEMENT_REQUIRED_AXES = Object.freeze([
   "boardMechanicalContainment",
   "viaPadGeometry",
   "componentOccupancy",
   "criticalPlacementZones",
   "humanInterfaces",
   "externalInterfacesAndBom",
-];
+]);
+const PRE_PLACEMENT_MODES = new Set(["route", "repair", "copper"]);
 
-function usage(mode) {
+function usage() {
   return `Usage:
-  node scripts/live/${mode}_transaction.mjs --plan FILE --output FILE [options]
+  node scripts/live/easyeda_transaction.mjs --plan FILE --output FILE [options]
 
 Options:
   --execute             Apply the validated transaction. Default is dry-run.
   --bridge-port PORT    Use one verified EasyEDA bridge port.
   --window-id ID        Required when multiple windows are connected.
-  --self-test           Run deterministic plan/control tests.
+  --self-test           Run deterministic plan/control tests for every mode.
 
-Execution requires CONTINUE budget evidence, matching checkpoint evidence
-(NATIVE_RESTORE_MATCH for production), current ledger/placement evidence, and
-an exact-transaction authorization record. An applied transaction remains
-PENDING_SAVED_REOPENED_READBACK and closes no gate.
+The schema-2 plan selects route, repair, placement, outline, or copper mode.
+Execution requires current evidence and stops at
+TRANSACTION_APPLIED_PENDING_REOPEN. It never closes a gate by itself.
 `;
 }
 
-function parseArgs(argv, mode) {
+function parseArgs(argv) {
   const options = { plan: null, output: null, execute: false, bridgePort: null, windowId: null, selfTest: false };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
@@ -55,7 +64,7 @@ function parseArgs(argv, mode) {
     else if (option === "--window-id") options.windowId = next();
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
-      process.stdout.write(usage(mode));
+      process.stdout.write(usage());
       process.exit(0);
     } else throw new Error(`unknown option: ${option}`);
   }
@@ -63,382 +72,334 @@ function parseArgs(argv, mode) {
     if (!options.plan) throw new Error("--plan is required");
     if (!options.output) throw new Error("--output is required");
   }
+  if (options.bridgePort !== null && (!Number.isInteger(options.bridgePort) || options.bridgePort < 1 || options.bridgePort > 65535)) {
+    throw new Error("--bridge-port must be an integer from 1 to 65535");
+  }
   return options;
 }
 
-async function readJson(file, label) {
-  try {
-    return JSON.parse(await readFile(file, "utf8"));
-  } catch (error) {
-    throw new Error(`unable to read ${label} ${file}: ${error.message}`);
-  }
+async function loadControlRecords(plan, artifactRoot) {
+  const load = (field, label) => readJsonFile(
+    resolveContainedPath(artifactRoot, plan.controls[field], label),
+    label,
+  );
+  const [budget, checkpoint, authorization, ledger, operationLog, prePlacement] = await Promise.all([
+    load("budgetCheck", "budget check"),
+    load("checkpointCheck", "checkpoint check"),
+    load("authorizationRecord", "authorization record"),
+    load("gateLedgerCheck", "gate ledger check"),
+    load("operationLog", "operation log"),
+    PRE_PLACEMENT_MODES.has(plan.mode)
+      ? load("prePlacementReport", "pre-transaction placement report")
+      : Promise.resolve(null),
+  ]);
+  return analyzeControlRecords(plan, { budget, checkpoint, authorization, ledger, operationLog, prePlacement });
 }
 
-async function validateControls(plan, baseDir) {
-  const resolve = (file) => path.resolve(baseDir, file);
-  const [budget, checkpoint, authorization, ledger, placement, operationLog] = await Promise.all([
-    readJson(resolve(plan.controls.budgetCheck), "budget check"),
-    readJson(resolve(plan.controls.checkpointCheck), "checkpoint check"),
-    readJson(resolve(plan.controls.authorizationRecord), "authorization record"),
-    readJson(resolve(plan.controls.gateLedgerCheck), "gate ledger check"),
-    readJson(resolve(plan.controls.placementReport), "placement report"),
-    readJson(resolve(plan.controls.operationLog), "operation log"),
-  ]);
-  return analyzeControlRecords(
-    plan,
-    budget,
-    checkpoint,
-    authorization,
-    ledger,
-    placement,
-    operationLog,
+function placementIsCurrentAndClear(placement, fingerprint) {
+  const required = new Set(placement?.coverage?.requiredAxes || []);
+  const checked = new Set(placement?.coverage?.checkedAxes || []);
+  return Boolean(
+    placement?.kind === "easyeda-placement-audit" &&
+      placement?.schemaVersion === 3 &&
+      placement?.status === "PLACEMENT_CLEAR_FOR_ROUTING" &&
+      placement?.design?.fingerprint === fingerprint &&
+      !placement?.coverage?.unverifiedAxes?.length &&
+      PLACEMENT_REQUIRED_AXES.every((axis) => required.has(axis) && checked.has(axis))
   );
 }
 
-function analyzeControlRecords(
-  plan,
-  budget,
-  checkpoint,
-  authorization,
-  ledger,
-  placement,
-  operationLog,
-) {
+function analyzeControlRecords(plan, records) {
+  const { budget, checkpoint, authorization, ledger, operationLog, prePlacement } = records;
   const reasons = [];
-  if (budget.kind !== "easyeda-execution-budget-check" || budget.status !== "CONTINUE" || budget.executeAllowed !== true) {
+  if (budget?.kind !== "easyeda-execution-budget-check" || budget?.status !== "CONTINUE" || budget?.executeAllowed !== true) {
     reasons.push("execution budget does not permit another transaction");
   }
   const checkpointMatches = Boolean(
-    checkpoint.executeAllowed === true &&
-      checkpoint.liveFingerprint === plan.baselineFingerprint &&
+    checkpoint?.executeAllowed === true &&
+      checkpoint?.liveFingerprint === plan.baselineFingerprint &&
       (
-        (checkpoint.kind === "easyeda-native-checkpoint-check" &&
-          checkpoint.status === "NATIVE_CHECKPOINT_MATCH") ||
-        (checkpoint.kind === "easyeda-native-restore-check" &&
-          checkpoint.status === "NATIVE_RESTORE_MATCH" &&
-          checkpoint.restoreReady === true)
+        (checkpoint?.kind === "easyeda-native-checkpoint-check" && checkpoint?.status === "NATIVE_CHECKPOINT_MATCH") ||
+        (checkpoint?.kind === "easyeda-native-restore-check" && checkpoint?.status === "NATIVE_RESTORE_MATCH" && checkpoint?.restoreReady === true)
       ),
   );
-  if (!checkpointMatches) {
-    reasons.push("native checkpoint does not match the plan baseline fingerprint");
-  } else if (
-    plan.targetClass === "PRODUCTION" &&
-    checkpoint.kind !== "easyeda-native-restore-check"
-  ) {
+  if (!checkpointMatches) reasons.push("native checkpoint does not match the plan baseline fingerprint");
+  else if (plan.targetClass === "PRODUCTION" && checkpoint.kind !== "easyeda-native-restore-check") {
     reasons.push("production transaction requires a non-production probe restore check");
   }
   if (
-    authorization.kind !== "easyeda-operation-authorization" ||
-    authorization.schemaVersion !== 1 ||
-    authorization.authorized !== true ||
-    authorization.transactionId !== plan.transactionId ||
-    !["USER_OWNED", "AI_DEDICATED"].includes(authorization.authorizationProfile) ||
-    typeof authorization.userWords !== "string" ||
+    authorization?.kind !== "easyeda-operation-authorization" ||
+    authorization?.schemaVersion !== 1 ||
+    authorization?.authorized !== true ||
+    authorization?.transactionId !== plan.transactionId ||
+    authorization?.mode !== plan.mode ||
+    !["USER_OWNED", "AI_DEDICATED"].includes(authorization?.authorizationProfile) ||
+    typeof authorization?.userWords !== "string" ||
     !authorization.userWords.trim() ||
     !Number.isFinite(Date.parse(authorization.authorizedAt))
-  ) reasons.push("operation authorization is absent, stale, or not bound to this transaction");
-  if (
-    plan.targetClass === "PRODUCTION" &&
-    authorization.targetClass !== "PRODUCTION"
-  ) reasons.push("production transaction lacks production-specific authorization");
-  if (ledger.kind !== "easyeda-gate-ledger" || ledger.decision !== "CLEARED") {
+  ) reasons.push("operation authorization is absent, stale, or not bound to this transaction and mode");
+  if (plan.targetClass === "PRODUCTION" && authorization?.targetClass !== "PRODUCTION") {
+    reasons.push("production transaction lacks production-specific authorization");
+  }
+  if (ledger?.kind !== "easyeda-gate-ledger" || ledger?.decision !== "CLEARED") {
     reasons.push("gate ledger integrity is not CLEARED before the transaction");
   }
-  const placementRequired = new Set(placement?.coverage?.requiredAxes || []);
-  const placementChecked = new Set(placement?.coverage?.checkedAxes || []);
-  if (
-    placement?.kind !== "easyeda-placement-audit" ||
-    placement?.schemaVersion !== 3 ||
-    placement?.status !== "PLACEMENT_CLEAR_FOR_ROUTING" ||
-    placement?.design?.fingerprint !== plan.baselineFingerprint ||
-    placement?.coverage?.unverifiedAxes?.length ||
-    PLACEMENT_REQUIRED_AXES.some(
-      (axis) => !placementRequired.has(axis) || !placementChecked.has(axis),
-    )
-  ) reasons.push("placement and native board-containment coverage is not current and clear");
-  const operationLogAnalysis = analyzeOperationLog(operationLog);
+  if (PRE_PLACEMENT_MODES.has(plan.mode) && !placementIsCurrentAndClear(prePlacement, plan.baselineFingerprint)) {
+    reasons.push("pre-transaction placement and native board-containment coverage is not current and clear");
+  }
+  const operationLogAnalysis = analyzeOperationLog(operationLog || {});
   if (operationLogAnalysis.status !== "VERIFIED") {
     reasons.push(`operation log is not valid schemaVersion 2 telemetry: ${operationLogAnalysis.reason}`);
   }
-  return {
-    cleared: reasons.length === 0,
-    reasons,
-    budget,
-    checkpoint,
-    authorization,
-    ledger,
-    placement,
-    operationLog,
-  };
+  return { cleared: reasons.length === 0, reasons, ...records };
 }
 
 async function appendOperationEntry(file, log, entry) {
-  if (log.entries.some((item) => item.id === entry.id)) {
-    throw new Error(`operation log already contains entry id ${entry.id}`);
-  }
+  if (log.entries.some((item) => item.id === entry.id)) throw new Error(`operation log already contains entry id ${entry.id}`);
   const updated = { ...log, entries: [...log.entries, entry] };
   await writeFile(file, `${JSON.stringify(updated, null, 2)}\n`);
 }
 
-function dryRunResult(plan, mode, validation, controls = null) {
-  const code = validation.valid ? browserTransactionCode(plan, mode) : null;
+function dryRunResult(validation, controls = null) {
+  let code = null;
+  if (validation.executable) code = browserTransactionCode(validation.plan);
+  const clear = validation.executable && controls?.cleared === true;
   return {
-    schemaVersion: 1,
-    kind: `easyeda-${mode}-transaction-result`,
-    status: validation.valid && (!controls || controls.cleared)
-      ? "PLAN_VALID"
-      : "PLAN_BLOCKED",
-    executeAllowed: validation.valid && controls?.cleared === true,
+    schemaVersion: 2,
+    kind: "easyeda-transaction-result",
+    status: clear ? "PLAN_VALID" : "PLAN_BLOCKED",
+    executeAllowed: clear,
     fabricationRelease: false,
     notAFabricationRelease: notAFabricationReleaseMessage(),
-    planFingerprint: stableHash(plan),
+    planFingerprint: stableHash(validation.plan),
     plan: validation.summary,
     errors: validation.errors,
+    warnings: validation.warnings,
     controlReasons: controls?.reasons || [],
     browserCodeFingerprint: code ? stableHash(code) : null,
-    nextAction: validation.valid
-      ? "Run only with --execute after all control artifacts clear; then save/reopen and verify the exact delta."
-      : "Correct the immutable JSON plan before any live call.",
+    nextAction: validation.executable
+      ? "Execute only after all named control artifacts clear; then save/reopen and verify the exact normalized delta."
+      : "Author or correct a native schemaVersion 2 immutable transaction plan before any live call.",
   };
 }
 
-function planFixture(mode) {
+function operationFixtures(mode) {
+  if (mode === "route") return [
+    {
+      operationId: "op-line-create", type: "line.create", net: "USB_DP", layerEnum: "TOP",
+      startX: 0, startY: 0, endX: 100, endY: 0, lineWidth: 8, primitiveLock: false,
+    },
+    {
+      operationId: "op-via-create", type: "via.create", net: "USB_DP", x: 100, y: 0,
+      holeDiameter: 12, diameter: 24, viaType: "VIA", primitiveLock: false,
+    },
+  ];
+  if (mode === "repair") return [
+    { operationId: "op-line-delete", type: "line.delete", primitiveId: "line-1" },
+    { operationId: "op-via-delete", type: "via.delete", primitiveId: "via-1" },
+    { operationId: "op-polyline-delete", type: "polyline.delete", primitiveId: "polyline-1" },
+  ];
+  if (mode === "placement") return [{
+    operationId: "op-component-modify", type: "component.modify", primitiveId: "component-1", designator: "U1",
+    expectedBefore: { x: 10, y: 20, rotation: 0, layerEnum: "TOP", primitiveLock: false },
+    changes: { x: 30, y: 40, rotation: 90, layerEnum: "TOP", primitiveLock: false },
+  }];
+  if (mode === "outline") return [{
+    operationId: "op-outline-create", type: "polyline.create", net: "", layerEnum: "BOARD_OUTLINE",
+    polygon: [0, 0, "L", 100, 0, 100, 100, 0, 100, 0, 0],
+    expectedPoints: [[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]],
+    lineWidth: 10, primitiveLock: true,
+  }];
+  return [
+    { operationId: "op-pour-delete", type: "pour.delete", primitiveId: "pour-1" },
+    { operationId: "op-poured-delete", type: "poured.delete", primitiveId: "poured-1" },
+  ];
+}
+
+function planFixture(mode = "route") {
+  const operations = operationFixtures(mode);
+  const destructive = !["route", "outline"].includes(mode);
   return {
-    schemaVersion: 1,
-    kind: `easyeda-${mode}-transaction-plan`,
-    transactionId: "tx-route-1",
-    gate: "ROUTING_CANARY_CLEAR",
-    attemptFamily: "route-usb",
+    schemaVersion: 2,
+    kind: "easyeda-transaction-plan",
+    mode,
+    transactionId: `tx-${mode}-1`,
+    gate: mode === "route" ? "ROUTING_CANARY_CLEAR" : "BOUNDED_GEOMETRY_TRANSACTION",
+    attemptFamily: `${mode}-fixture`,
     attemptIndex: 1,
     targetClass: "NON_PRODUCTION_PROBE",
     projectUuid: "project-1",
     pcbUuid: "pcb-1",
     baselineFingerprint: `sha256:${"a".repeat(64)}`,
-    net: "USB_DP",
-    creates: {
-      lines: [{
-        layerEnum: "TOP", startX: 0, startY: 0, endX: 100,
-        endY: 0, lineWidth: 8, primitiveLock: false,
-      }],
-      vias: [],
+    artifactRoot: ".",
+    operations,
+    rollback: { strategy: destructive ? "RESTORE_CHECKPOINT" : "DELETE_CREATED_IDS" },
+    acceptance: {
+      expectedDeltas: expectedDeltas(operations),
+      requireDetailedDrc: true,
+      requirePlacementClearAfter: true,
+      requireBaselineRecoveryOnReject: true,
     },
-    deletes: { lineIds: [], viaIds: [] },
-    acceptance: { expectedLineDelta: 1, expectedViaDelta: 0, requireDetailedDrc: true },
     controls: {
-      budgetCheck: "budget.json",
-      checkpointCheck: "checkpoint.json",
-      authorizationRecord: "authorization.json",
-      gateLedgerCheck: "gate-ledger-check.json",
-      placementReport: "placement-report.json",
-      operationLog: "operation-log.json",
+      budgetCheck: "evidence/readbacks/budget.json",
+      checkpointCheck: "evidence/readbacks/checkpoint.json",
+      authorizationRecord: "evidence/readbacks/authorization.json",
+      gateLedgerCheck: "evidence/readbacks/gate-ledger-check.json",
+      prePlacementReport: "evidence/audits/placement-before.json",
+      postPlacementReport: "evidence/audits/placement-after.json",
+      operationLog: "evidence/readbacks/operation-log.json",
     },
   };
 }
 
-function selfTest(mode) {
-  const fixturePlan = planFixture(mode);
-  const valid = validateTransactionPlan(fixturePlan, mode);
-  if (!valid.valid) throw new Error(`valid ${mode} plan failed: ${valid.errors.join("; ")}`);
-  const invalid = planFixture(mode);
-  invalid.creates.lines[0].lineWidth = 0;
-  if (validateTransactionPlan(invalid, mode).valid) throw new Error("zero-width route plan cleared");
-  const escaping = planFixture(mode);
-  escaping.controls.operationLog = "../operation-log.json";
-  if (validateTransactionPlan(escaping, mode).valid) {
-    throw new Error("transaction plan accepted an escaping control path");
-  }
-  if (mode === "route") {
-    const deleting = planFixture(mode);
-    deleting.deletes.lineIds = ["line-1"];
-    deleting.acceptance.expectedLineDelta = 0;
-    if (validateTransactionPlan(deleting, mode).valid) throw new Error("route plan accepted deletion");
-  } else {
-    const repair = planFixture(mode);
-    repair.deletes.lineIds = ["line-1"];
-    repair.acceptance.expectedLineDelta = 0;
-    if (!validateTransactionPlan(repair, mode).valid) throw new Error("bounded repair plan rejected exact-id deletion");
-  }
-  const fingerprint = fixturePlan.baselineFingerprint;
-  const budget = { kind: "easyeda-execution-budget-check", status: "CONTINUE", executeAllowed: true };
-  const checkpoint = {
-    kind: "easyeda-native-checkpoint-check",
-    status: "NATIVE_CHECKPOINT_MATCH",
-    executeAllowed: true,
-    liveFingerprint: fingerprint,
-  };
-  const authorization = {
-    kind: "easyeda-operation-authorization",
-    schemaVersion: 1,
-    authorized: true,
-    transactionId: fixturePlan.transactionId,
-    authorizationProfile: "USER_OWNED",
-    userWords: "authorize this bounded non-production probe",
-    authorizedAt: "2026-08-15T00:00:00.000Z",
-    targetClass: "NON_PRODUCTION_PROBE",
-  };
-  const ledger = { kind: "easyeda-gate-ledger", decision: "CLEARED" };
-  const placement = {
-    kind: "easyeda-placement-audit",
-    schemaVersion: 3,
-    status: "PLACEMENT_CLEAR_FOR_ROUTING",
-    design: { fingerprint },
-    coverage: {
-      requiredAxes: [...PLACEMENT_REQUIRED_AXES],
-      checkedAxes: [...PLACEMENT_REQUIRED_AXES],
-      unverifiedAxes: [],
+function controlFixture(plan) {
+  const fingerprint = plan.baselineFingerprint;
+  return {
+    budget: { kind: "easyeda-execution-budget-check", status: "CONTINUE", executeAllowed: true },
+    checkpoint: { kind: "easyeda-native-checkpoint-check", status: "NATIVE_CHECKPOINT_MATCH", executeAllowed: true, liveFingerprint: fingerprint },
+    authorization: {
+      kind: "easyeda-operation-authorization", schemaVersion: 1, authorized: true,
+      transactionId: plan.transactionId, mode: plan.mode, authorizationProfile: "USER_OWNED",
+      userWords: "authorize this bounded non-production probe", authorizedAt: "2026-08-15T00:00:00.000Z",
+      targetClass: "NON_PRODUCTION_PROBE",
     },
+    ledger: { kind: "easyeda-gate-ledger", decision: "CLEARED" },
+    prePlacement: {
+      kind: "easyeda-placement-audit", schemaVersion: 3, status: "PLACEMENT_CLEAR_FOR_ROUTING",
+      design: { fingerprint },
+      coverage: { requiredAxes: [...PLACEMENT_REQUIRED_AXES], checkedAxes: [...PLACEMENT_REQUIRED_AXES], unverifiedAxes: [] },
+    },
+    operationLog: { schemaVersion: 2, appendOnly: true, entries: [] },
   };
-  const operationLog = { schemaVersion: 2, appendOnly: true, entries: [] };
-  const controls = analyzeControlRecords(
-    fixturePlan,
-    budget,
-    checkpoint,
-    authorization,
-    ledger,
-    placement,
-    operationLog,
-  );
-  if (!controls.cleared) throw new Error(`valid controls blocked: ${controls.reasons.join("; ")}`);
-  const production = structuredClone(fixturePlan);
+}
+
+function selfTest() {
+  for (const mode of ["route", "repair", "placement", "outline", "copper"]) {
+    const plan = planFixture(mode);
+    const validation = validateTransactionPlan(plan);
+    if (!validation.executable) throw new Error(`valid ${mode} plan failed: ${validation.errors.join("; ")}`);
+    const controls = analyzeControlRecords(plan, controlFixture(plan));
+    if (!controls.cleared) throw new Error(`valid ${mode} controls blocked: ${controls.reasons.join("; ")}`);
+    if (!browserTransactionCode(plan).includes("operationResults")) throw new Error(`${mode} browser program was not generated`);
+  }
+  const unsafe = planFixture("route");
+  unsafe.operations.push({ operationId: "bad-delete", type: "line.delete", primitiveId: "line-1" });
+  unsafe.acceptance.expectedDeltas = expectedDeltas(unsafe.operations);
+  unsafe.rollback.strategy = "RESTORE_CHECKPOINT";
+  if (validateTransactionPlan(unsafe).valid) throw new Error("route mode accepted a destructive operation");
+  const escaping = planFixture("route");
+  escaping.controls.operationLog = "../operation-log.json";
+  if (validateTransactionPlan(escaping).valid) throw new Error("plan accepted an escaping control path");
+  const legacy = {
+    schemaVersion: 1, kind: "easyeda-route-transaction-plan", transactionId: "legacy", gate: "ROUTING_CANARY_CLEAR",
+    attemptFamily: "legacy", attemptIndex: 1, targetClass: "NON_PRODUCTION_PROBE", projectUuid: "p", pcbUuid: "b",
+    baselineFingerprint: `sha256:${"a".repeat(64)}`, net: "N", creates: { lines: [], vias: [] }, deletes: { lineIds: [], viaIds: [] },
+    acceptance: { expectedLineDelta: 0, expectedViaDelta: 0, requireDetailedDrc: true }, controls: {},
+  };
+  if (validateTransactionPlan(legacy).executable) throw new Error("legacy plan unexpectedly remained executable");
+  const production = planFixture("route");
   production.targetClass = "PRODUCTION";
-  const productionAuthorization = { ...authorization, targetClass: "PRODUCTION" };
-  const productionBlocked = analyzeControlRecords(
-    production,
-    budget,
-    checkpoint,
-    productionAuthorization,
-    ledger,
-    placement,
-    operationLog,
-  );
-  if (!productionBlocked.reasons.some((item) => /probe restore/.test(item))) {
+  const records = controlFixture(production);
+  records.authorization.targetClass = "PRODUCTION";
+  if (!analyzeControlRecords(production, records).reasons.some((reason) => /probe restore/.test(reason))) {
     throw new Error("production controls accepted an untested native checkpoint");
   }
-  const restore = {
-    kind: "easyeda-native-restore-check",
-    status: "NATIVE_RESTORE_MATCH",
-    executeAllowed: true,
-    restoreReady: true,
-    liveFingerprint: fingerprint,
-  };
-  const productionClear = analyzeControlRecords(
-    production,
-    budget,
-    restore,
-    productionAuthorization,
-    ledger,
-    placement,
-    operationLog,
-  );
-  if (!productionClear.cleared) {
-    throw new Error(`verified production controls blocked: ${productionClear.reasons.join("; ")}`);
-  }
-  process.stdout.write(`${JSON.stringify({ mode, valid: true, unsafePlanRejected: true, productionRestoreRequired: true })}\n`);
+  process.stdout.write(`${JSON.stringify({ status: "TOOLS_LIBRARY_SELF_TEST_CLEAR", modes: 5, schemaVersion: 2 })}\n`);
 }
 
-async function runTransactionCli(mode, argv = process.argv.slice(2)) {
-  try {
-    const options = parseArgs(argv, mode);
-    if (options.selfTest) return selfTest(mode);
-    const planPath = path.resolve(options.plan);
-    const plan = await readJson(planPath, "transaction plan");
-    const validation = validateTransactionPlan(plan, mode);
-    let controls = null;
-    if (validation.valid) controls = await validateControls(plan, path.dirname(planPath));
-    let result = dryRunResult(plan, mode, validation, controls);
-    if (options.execute) {
-      if (!validation.valid || !controls?.cleared) {
-        throw new Error([...validation.errors, ...(controls?.reasons || [])].join("; "));
-      }
-      const bridge = await findBridge(options.bridgePort || undefined);
-      const windowId = await resolveWindow(bridge, options.windowId || undefined);
-      const preflight = await fetchJson(
-        `http://127.0.0.1:${bridge.port}/execute`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ code: collectorCode({ includeDrc: false }), windowId }),
-        },
-        120_000,
-      );
-      if (!preflight.success) throw new Error(preflight.error || "EasyEDA preflight readback failed");
-      const preflightFingerprint = designFingerprint(preflight.result);
-      if (
-        preflight.result?.project?.uuid !== plan.projectUuid ||
-        preflight.result?.document?.uuid !== plan.pcbUuid ||
-        preflightFingerprint !== plan.baselineFingerprint
-      ) {
-        throw new Error("saved/reopened live revision no longer matches the transaction baseline");
-      }
-      const transactionStartedAt = new Date();
-      let response;
-      try {
-        response = await fetchJson(
-          `http://127.0.0.1:${bridge.port}/execute`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ code: browserTransactionCode(plan, mode), windowId }),
-          },
-          120_000,
-        );
-      } catch (error) {
-        response = { success: false, error: error.message };
-      }
-      const endedAt = new Date();
-      const committed = response.success && response.result?.saveReturned === true;
-      const operationEntry = {
-        id: `${plan.transactionId}-apply-${plan.attemptIndex}`,
-        transactionId: plan.transactionId,
-        gate: plan.gate,
-        attemptFamily: plan.attemptFamily,
-        attemptIndex: plan.attemptIndex,
-        operation: `${mode} transaction: ${validation.summary.createLineCount} line create(s), ${validation.summary.createViaCount} via create(s), ${validation.summary.deleteLineCount} line delete(s), ${validation.summary.deleteViaCount} via delete(s)`,
-        outcome: committed ? "COMMITTED" : "UNKNOWN_TIMEOUT",
-        semanticReadback: committed
-          ? "API transaction returned after save; saved/reopened verification remains pending"
-          : "transaction or save outcome requires immediate semantic readback before any retry",
-        startedAt: transactionStartedAt.toISOString(),
-        endedAt: endedAt.toISOString(),
-        durationMs: endedAt.getTime() - transactionStartedAt.getTime(),
-        attemptDisposition: "UNKNOWN",
-        gateProgress: "NO_CHANGE",
-        evidence: [options.output],
-      };
-      await appendOperationEntry(
-        path.resolve(path.dirname(planPath), plan.controls.operationLog),
-        controls.operationLog,
-        operationEntry,
-      );
-      if (!response.success) throw new Error(response.error || "EasyEDA transaction failed");
-      if (!committed) throw new Error("EasyEDA transaction did not return a successful PCB save");
-      result = {
-        ...result,
-        status: "TRANSACTION_APPLIED_PENDING_REOPEN",
-        executeAllowed: false,
-        appliedAt: new Date().toISOString(),
-        bridge: { port: bridge.port, windowId: response.windowId },
-        preflight: {
-          projectUuid: preflight.result.project.uuid,
-          pcbUuid: preflight.result.document.uuid,
-          fingerprint: preflightFingerprint,
-        },
-        immediateResult: response.result,
-        nextAction:
-          "Preserve this result, save/switch/reopen the PCB, collect current state with detailed DRC, and run verify_gate.mjs. Do not expand the route or repair yet.",
-      };
+async function runTransactionCli(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv);
+  if (options.selfTest) return selfTest();
+  const planPath = path.resolve(options.plan);
+  const input = await readJsonFile(planPath, "transaction plan");
+  const validation = validateTransactionPlan(input);
+  const artifactRoot = validation.plan?.artifactRoot
+    ? resolveArtifactRoot(planPath, validation.plan.artifactRoot)
+    : path.dirname(planPath);
+  const outputPath = resolveContainedPath(artifactRoot, options.output, "transaction output");
+  if (existsSync(outputPath)) throw new Error(`transaction output already exists: ${outputPath}`);
+  let controls = null;
+  if (validation.executable) controls = await loadControlRecords(validation.plan, artifactRoot);
+  let result = dryRunResult(validation, controls);
+  if (options.execute) {
+    if (!validation.executable || !controls?.cleared) {
+      throw new Error([...validation.errors, ...validation.warnings, ...(controls?.reasons || [])].join("; "));
     }
-    const output = resolveSafeOutputPath(options.output);
-    await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx" });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    process.exitCode = result.status === "PLAN_BLOCKED" ? 2 : 0;
-  } catch (error) {
-    process.stderr.write(`${JSON.stringify({ error: error.message, kind: `easyeda-${mode}-transaction-result`, fabricationRelease: false }, null, 2)}\n`);
-    process.exitCode = 1;
+    const plan = validation.plan;
+    const preflightCall = await executeEasyedaCode({
+      code: collectorCode({ includeDrc: false }),
+      bridgePort: options.bridgePort,
+      windowId: options.windowId,
+    });
+    if (!preflightCall.response.success) throw new Error(preflightCall.response.error || "EasyEDA preflight readback failed");
+    const preflight = preflightCall.response.result;
+    const preflightFingerprint = designFingerprint(preflight);
+    if (preflight?.project?.uuid !== plan.projectUuid || preflight?.document?.uuid !== plan.pcbUuid || preflightFingerprint !== plan.baselineFingerprint) {
+      throw new Error("saved/reopened live revision no longer matches the transaction baseline");
+    }
+    const startedAt = new Date();
+    let call;
+    try {
+      call = await executeEasyedaCode({
+        code: browserTransactionCode(plan),
+        bridgePort: preflightCall.bridge.port,
+        windowId: preflightCall.windowId,
+      });
+    } catch (error) {
+      call = { bridge: preflightCall.bridge, windowId: preflightCall.windowId, response: { success: false, error: error.message } };
+    }
+    const endedAt = new Date();
+    const committed = call.response.success && call.response.result?.saveReturned === true;
+    const operationLogPath = resolveContainedPath(artifactRoot, plan.controls.operationLog, "operation log");
+    const operationEntry = {
+      id: `${plan.transactionId}-apply-${plan.attemptIndex}`,
+      transactionId: plan.transactionId,
+      gate: plan.gate,
+      attemptFamily: plan.attemptFamily,
+      attemptIndex: plan.attemptIndex,
+      operation: `${plan.mode} transaction: ${JSON.stringify(validation.summary.operationCounts)}`,
+      outcome: committed ? "COMMITTED" : "UNKNOWN_TIMEOUT",
+      semanticReadback: committed
+        ? "API transaction returned after save; saved/reopened verification remains pending"
+        : "transaction or save outcome requires immediate semantic readback before any retry",
+      startedAt: startedAt.toISOString(),
+      endedAt: endedAt.toISOString(),
+      durationMs: endedAt.getTime() - startedAt.getTime(),
+      attemptDisposition: "UNKNOWN",
+      gateProgress: "NO_CHANGE",
+      evidence: [outputPath],
+    };
+    const commonResult = {
+      ...result,
+      executeAllowed: false,
+      appliedAt: new Date().toISOString(),
+      bridge: { port: call.bridge.port, windowId: call.response.windowId || call.windowId },
+      preflight: { projectUuid: preflight.project.uuid, pcbUuid: preflight.document.uuid, fingerprint: preflightFingerprint },
+      immediateResult: call.response.result || null,
+      executionError: call.response.success ? null : call.response.error || "EasyEDA transaction failed",
+    };
+    result = committed
+      ? {
+          ...commonResult,
+          status: "TRANSACTION_APPLIED_PENDING_REOPEN",
+          nextAction: "Preserve this result, save/switch/reopen the PCB, collect full current state, rerun the post-placement audit, and run verify_gate.mjs.",
+        }
+      : {
+          ...commonResult,
+          status: "TRANSACTION_OUTCOME_UNKNOWN",
+          nextAction: "Stop. Capture current state immediately; do not retry. Restore the verified checkpoint or prove the exact semantic outcome before another attempt.",
+        };
+    await writeContainedJson(artifactRoot, options.output, result);
+    await appendOperationEntry(operationLogPath, controls.operationLog, operationEntry);
   }
+  const output = outputPath;
+  if (!options.execute) await writeContainedJson(artifactRoot, options.output, result);
+  process.stdout.write(`${JSON.stringify({ status: result.status, mode: validation.plan?.mode || null, output })}\n`);
+  process.exitCode = ["PLAN_BLOCKED", "TRANSACTION_OUTCOME_UNKNOWN"].includes(result.status) ? 2 : 0;
 }
 
 export {
+  PLACEMENT_REQUIRED_AXES,
   analyzeControlRecords,
   appendOperationEntry,
   dryRunResult,
@@ -446,5 +407,4 @@ export {
   planFixture,
   runTransactionCli,
   selfTest,
-  validateControls,
 };
