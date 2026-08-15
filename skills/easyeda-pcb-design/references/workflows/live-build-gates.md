@@ -13,6 +13,9 @@
 - Schematic identity gate
 - PCB synchronization gate
 - Revision budget and manifest
+- Execution budget and stop evidence
+- Native checkpoints
+- Data-driven route and repair transactions
 - Routing and copper canaries
 - Failure escalation
 - Cleanup authorization
@@ -540,6 +543,165 @@ node scripts/live/easyeda_revision_guard.mjs \
   --output <project>/evidence/readbacks/revision-create-guard.json
 ```
 
+## Execution budget and stop evidence
+
+Create `<project>/execution-budget.json` before the first mutation. Its
+wall-clock, no-progress, per-gate, and attempt ceilings are project decisions;
+do not invent elapsed time from file names, operation counts, or chat history.
+Use schema 1 and replace every illustrative value:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "easyeda-execution-budget",
+  "startedAt": "ISO-8601 task start",
+  "totalBudgetMs": 14400000,
+  "noGateProgressBudgetMs": 1800000,
+  "defaultAttemptLimit": 2,
+  "gateBudgetsMs": {"ROUTING_CANARY_CLEAR": 3600000},
+  "attemptLimits": {"named-hypothesis-family": 2}
+}
+```
+
+These numbers are examples, not defaults. Record the chosen values and reason
+before work so an exhausted budget cannot be enlarged retroactively.
+Evaluate it before every mutating transaction:
+
+```bash
+node scripts/live/easyeda_execution_budget.mjs \
+  --budget <project>/execution-budget.json \
+  --operation-log <project>/evidence/readbacks/operation-log.json \
+  --output <project>/evidence/readbacks/execution-budget-check.json
+```
+
+Only `CONTINUE` authorizes another attempt. `STOPPED_RETRY_CEILING`,
+`STOPPED_GATE_BUDGET_EXHAUSTED`, `STOPPED_NO_GATE_PROGRESS`, and
+`STOPPED_BUDGET_EXHAUSTED` are successful refusal proofs: preserve the report,
+leave the gate open or blocked, and report the next user decision. Never reset
+the budget by renaming a gate, starting a new script, or creating a new PCB.
+
+## Native checkpoints
+
+Before production routing or destructive repair, export the saved native
+`.epro` project and collect a current PCB readback in the same transaction.
+When the companion exposes no native-export API, a read-only UI export is
+allowed; it is not permission to mutate through the UI. Bind both artifacts:
+
+```bash
+node scripts/live/easyeda_native_checkpoint.mjs create \
+  --native <project>/evidence/snapshots/pre-route.epro \
+  --readback <project>/evidence/readbacks/pre-route-pcb.json \
+  --output <project>/evidence/snapshots/pre-route-checkpoint.json
+node scripts/live/easyeda_native_checkpoint.mjs verify \
+  --manifest <project>/evidence/snapshots/pre-route-checkpoint.json \
+  --native <project>/evidence/snapshots/pre-route.epro \
+  --readback <project>/evidence/readbacks/pre-route-pcb.json \
+  --output <project>/evidence/readbacks/pre-route-checkpoint-check.json
+node scripts/live/easyeda_native_checkpoint.mjs verify-restore \
+  --manifest <project>/evidence/snapshots/pre-route-checkpoint.json \
+  --native <project>/evidence/snapshots/pre-route.epro \
+  --readback <project>/evidence/readbacks/restored-probe-pcb.json \
+  --output <project>/evidence/readbacks/pre-route-restore-check.json
+```
+
+`NATIVE_CHECKPOINT_MATCH` proves exact artifact and semantic-readback binding,
+not import compatibility. A production transaction requires
+`NATIVE_RESTORE_MATCH` from importing the exact artifact into a separate
+non-production probe and comparing semantic content, counts, and native outline
+identity. Do not describe the checkpoint as a verified rollback path before
+that restore check passes.
+
+## Data-driven route and repair transactions
+
+Represent each bounded route or repair as JSON and run the shared executors;
+do not generate one-off browser scripts for every line or via. A plan binds the
+transaction and attempt identity, target class, project/PCB UUIDs, baseline
+fingerprint, net, exact line/via/delete operations, expected deltas, and the
+budget, checkpoint, authorization, ledger, placement, and schema-2 operation-log
+paths. Every control path is relative to the plan directory and may not escape
+it. The runner appends an `UNKNOWN` timed application entry; `verify_gate.mjs`
+appends the saved/reopened `ACCEPTED`, `REJECTED`, or still-`UNKNOWN` resolution.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "easyeda-route-transaction-plan",
+  "transactionId": "route-gpio8-001",
+  "gate": "ROUTING_CANARY_CLEAR",
+  "attemptFamily": "gpio8-route",
+  "attemptIndex": 1,
+  "targetClass": "PRODUCTION",
+  "projectUuid": "exact-project-uuid",
+  "pcbUuid": "exact-pcb-uuid",
+  "baselineFingerprint": "sha256:<64-hex>",
+  "net": "GPIO8",
+  "creates": {
+    "lines": [{
+      "layerEnum": "TOP",
+      "startX": 100,
+      "startY": 100,
+      "endX": 200,
+      "endY": 100,
+      "lineWidth": 8,
+      "primitiveLock": false
+    }],
+    "vias": []
+  },
+  "deletes": {"lineIds": [], "viaIds": []},
+  "acceptance": {
+    "expectedLineDelta": 1,
+    "expectedViaDelta": 0,
+    "requireDetailedDrc": true
+  },
+  "controls": {
+    "budgetCheck": "evidence/readbacks/execution-budget-check.json",
+    "checkpointCheck": "evidence/readbacks/pre-route-restore-check.json",
+    "authorizationRecord": "evidence/readbacks/route-authorization.json",
+    "gateLedgerCheck": "evidence/readbacks/gate-ledger-check.json",
+    "placementReport": "evidence/audits/placement-closure.json",
+    "operationLog": "evidence/readbacks/operation-log.json"
+  }
+}
+```
+
+For repair, change `kind` to `easyeda-repair-transaction-plan` and list only
+the exact line/via IDs owned by the bounded transaction under `deletes`.
+The authorization path names a schema-1 `easyeda-operation-authorization`
+record containing `authorized: true`, the same `transactionId` and
+`targetClass`, `authorizationProfile` (`USER_OWNED` or `AI_DEDICATED`), the
+user's exact nonempty `userWords`, and `authorizedAt`. This binds permission to
+one plan. For ordinary work already owned by the selected branch, `userWords`
+may quote the task request that authorized the build; a high-risk operation
+still requires the separate operation-specific wording defined above.
+
+```bash
+node scripts/live/route_transaction.mjs --plan <project>/route-plan.json \
+  --output <project>/evidence/readbacks/route-plan-check.json
+node scripts/live/route_transaction.mjs --plan <project>/route-plan.json \
+  --execute --output <project>/evidence/readbacks/route-result.json
+```
+
+Use `repair_transaction.mjs` for a deletion or replacement; route plans cannot
+delete. `--execute` performs a fast fresh-state preflight, requires exact UUID
+and fingerprint identity, applies the bounded API calls, saves, and stops at
+`TRANSACTION_APPLIED_PENDING_REOPEN`. Save/switch/reopen, collect full current
+state, and verify the gate:
+
+```bash
+node scripts/live/inspect_current_state.mjs --with-drc \
+  --output <project>/evidence/readbacks/post-route-state.json
+node scripts/live/verify_gate.mjs --plan <project>/route-plan.json \
+  --before <project>/evidence/readbacks/pre-route-state.json \
+  --after <project>/evidence/readbacks/post-route-state.json \
+  --transaction-result <project>/evidence/readbacks/route-result.json \
+  --output <project>/evidence/readbacks/route-gate-check.json
+```
+
+Only `TRANSACTION_VERIFIED` may advance a gate. `TRANSACTION_UNVERIFIED` stops
+for missing/stale evidence; `TRANSACTION_REJECTED` stops and triggers the
+declared inverse or verified restore path. Use fast inspection only for
+preflight; use `--with-drc` at canary and gate boundaries.
+
 ## Routing and copper canaries
 
 Do not expand a routing strategy across the full board before it passes a
@@ -728,14 +890,24 @@ Operation-log shape, append-only:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "appendOnly": true,
   "entries": [
     {
       "id": "op-0001",
+      "transactionId": "route-gpio8-001",
+      "gate": "ROUTING_CANARY_CLEAR",
+      "attemptFamily": "gpio8-route",
+      "attemptIndex": 1,
       "operation": "sch_PrimitiveComponent.create U1",
       "outcome": "COMMITTED",
-      "semanticReadback": "saved, reopened page, U1 present with stable unique ID"
+      "semanticReadback": "saved, reopened page, U1 present with stable unique ID",
+      "startedAt": "2026-08-15T01:00:00.000Z",
+      "endedAt": "2026-08-15T01:00:01.250Z",
+      "durationMs": 1250,
+      "attemptDisposition": "ACCEPTED",
+      "gateProgress": "CLOSED",
+      "evidence": ["route-gate-check.json"]
     }
   ]
 }
@@ -746,7 +918,12 @@ Operation-log shape, append-only:
 `semanticReadback`, and a `UNKNOWN_TIMEOUT` entry needs the readback that
 resolved the unknown state. Entry ids must be unique: reusing an id, or replacing
 an earlier entry's conclusion in place, breaks the append-only contract and makes
-the log unusable as evidence. Append a corrected entry instead.
+the log unusable as evidence. Append a corrected entry instead. Timestamps and
+`durationMs` must agree; `attemptFamily` plus `attemptIndex` identifies one
+bounded hypothesis, while `transactionId` groups its API calls. Record
+`attemptDisposition` as `ACCEPTED`, `REJECTED`, `UNKNOWN`, or `READ_ONLY`, and
+`gateProgress` as `NO_CHANGE`, `CLOSED`, or `BLOCKED`. A schema-1 log remains
+historical evidence but cannot support elapsed-time or retry-budget claims.
 
 Run the lint after each gate transition and before any closure claim:
 

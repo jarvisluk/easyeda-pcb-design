@@ -41,6 +41,11 @@ the detailed explanation/measurements; ignore only volatile display indices.
 The three canonical leaf sets must be identical. Compare leaf sets, not only
 top-level group counts or a boolean return.
 
+`inspect_current_state.mjs --with-drc` implements this gate-boundary capture and
+stores the current semantic state and DRC evidence under one fingerprint. The
+default fast inspection omits DRC and is only a preflight; it cannot close a
+gate.
+
 ## Decide conservatively
 
 - If any sample contains a non-exempt error leaf, return `FAIL` and retain the

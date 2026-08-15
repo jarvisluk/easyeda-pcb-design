@@ -1,4 +1,4 @@
 interface:
   display_name: "EasyEDA Pro PCB Design"
   short_description: "Design and review EasyEDA Pro schematics and PCBs"
-  default_prompt: "Use $easyeda-pcb-design to take the right slice of the EasyEDA design pipeline: classify entry state, scope, and mode; select the matching live gate branch when writing; clear requirements and primary functions; close schematic handoff; prove pad-complete placement closure before routing; and verify only the phases the request owns."
+  default_prompt: "Use $easyeda-pcb-design to classify the EasyEDA task, follow its exact-revision lifecycle, and enforce placement, execution-budget, native-checkpoint, transaction, and review gates for the requested scope."

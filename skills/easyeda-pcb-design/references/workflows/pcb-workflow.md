@@ -147,8 +147,10 @@ implemented placement. Read [placement-closure.md](../layout/placement-closure.m
 save/switch/reopen the PCB, and run the exact-revision placement audit. Require
 `PLACEMENT_CLEAR_FOR_ROUTING` before production routing.
 
-The gate checks ordinary via-to-pad copper and drill clearance even on the same
-net; containment of every live pad inside its owner's sourced courtyard;
+The gate checks the locked native board contour and declared cutouts; containment
+of every live pad, sourced courtyard, and critical placement zone inside the
+board material (or a subject-bound sourced edge overhang); ordinary via-to-pad
+copper and drill clearance even on the same net; containment of every live pad inside its owner's sourced courtyard;
 foreign pad/pad and pad/courtyard conflicts; sourced courtyard conflicts;
 critical module/escape zones; operator-control decisions; exact connector
 mating records; and passive/connector BOM policy. EasyEDA component BBoxes are
@@ -161,22 +163,19 @@ and reopens this gate.
 
 ## Route the board
 
-Before full routing in new construction, require current placement closure and
-pass the routing canary in
+Before full routing in new construction, require current placement closure, a
+`CONTINUE` execution-budget check, and a matching native `.epro` checkpoint;
+then pass the routing canary in
 [live-build-gates.md](live-build-gates.md). In PCB continuation, use the first
 new route in each unproven class as a canary while preserving existing geometry.
 During existing-board repair, treat each bounded replacement as its own canary
 and require semantic readback before expansion.
 
-Before autorouting or copper generation, prove the board outline is one closed
-contour on the board-outline layer. Loose segments that merely look like a
-rectangle are not an outline: the autorouter and the pour generator both need a
-defined board region, and unclosed geometry is a common cause of an autorouter
-that reports every net failed. Confirm closure by reading back outline
-primitives and checking that their endpoints join into a single loop, or by
-inspecting the exported Gerber outline. The baseline audit counts outline
-primitives but does not prove closure or non-self-intersection, so record that
-check separately. If the outline cannot be closed, stop and resolve it; do not
+Before autorouting or copper generation, require the schema-3 placement report's
+`boardMechanicalContainment` coverage axis. It proves one locked, closed,
+non-self-intersecting native outer contour, declared cutouts, and placement
+containment against the resulting board material. Loose segments that merely
+look like a rectangle are not an outline. If the outline cannot be closed, stop and resolve it; do not
 classify an autorouter failure on an unclosed board as an API capability
 failure, and do not use it to justify skipping routing.
 

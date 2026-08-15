@@ -68,6 +68,9 @@ REFERENCE_ROLES = {
     "power-distribution",
     "mixed-power-reference",
 }
+BOARD_BOUNDARY_BINDINGS = {"PLANNING_CANDIDATE", "LIVE_NATIVE"}
+BOARD_EDGE_SUBJECT_TYPES = {"ASSEMBLY_ENVELOPE", "CRITICAL_ZONE"}
+BOARD_EDGE_RELATIONS = {"ALLOWED_OVERHANG", "EDGE_ALIGNED"}
 
 
 def _nonempty(value: Any) -> bool:
@@ -450,6 +453,65 @@ def validate_constraint_record(
         errors.append(
             "planningRevision is allowed only when revision uses planning:sha256:<hex>"
         )
+
+    board_boundary = record.get("boardBoundary")
+    if not isinstance(board_boundary, dict):
+        errors.append("boardBoundary must be an object")
+        board_boundary = {}
+    boundary_binding = _enum(
+        errors,
+        "boardBoundary.binding",
+        board_boundary.get("binding"),
+        BOARD_BOUNDARY_BINDINGS,
+    )
+    if not _nonempty(board_boundary.get("source")):
+        errors.append("boardBoundary.source must identify the mechanical authority")
+    if boundary_binding == "PLANNING_CANDIDATE":
+        if not str(revision or "").startswith("planning:sha256:"):
+            errors.append("PLANNING_CANDIDATE boardBoundary requires a planning revision")
+        if not _nonempty(board_boundary.get("outlineCandidateId")):
+            errors.append("boardBoundary.outlineCandidateId is required for planning")
+        if not _artifact_exists(board_boundary.get("geometryArtifact"), base_dir):
+            errors.append("planning boardBoundary requires an existing geometryArtifact")
+    elif boundary_binding == "LIVE_NATIVE":
+        layer_id = board_boundary.get("outlineLayerId")
+        if isinstance(layer_id, bool) or not isinstance(layer_id, (int, float)) or not math.isfinite(float(layer_id)):
+            errors.append("boardBoundary.outlineLayerId must be a finite live layer id")
+        if not _nonempty(board_boundary.get("outerContourPrimitiveId")):
+            errors.append("boardBoundary.outerContourPrimitiveId is required for live binding")
+        cutouts = board_boundary.get("cutoutPrimitiveIds")
+        if not isinstance(cutouts, list) or any(not _nonempty(item) for item in cutouts):
+            errors.append("boardBoundary.cutoutPrimitiveIds must be an array of primitive ids")
+        elif len(cutouts) != len(set(cutouts)):
+            errors.append("boardBoundary.cutoutPrimitiveIds must be unique")
+        if board_boundary.get("requireLocked") is not True:
+            errors.append("a cleared live boardBoundary must set requireLocked true")
+    edge_relations = board_boundary.get("edgeRelations")
+    if not isinstance(edge_relations, list):
+        errors.append("boardBoundary.edgeRelations must be an array")
+        edge_relations = []
+    seen_edge_subjects: set[tuple[str, str]] = set()
+    for index, relation in enumerate(edge_relations):
+        prefix = f"boardBoundary.edgeRelations[{index}]"
+        if not isinstance(relation, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        subject_type = _enum(
+            errors, f"{prefix}.subjectType", relation.get("subjectType"), BOARD_EDGE_SUBJECT_TYPES
+        )
+        subject_id = relation.get("subjectId")
+        if not _nonempty(subject_id):
+            errors.append(f"{prefix}.subjectId must be a non-empty string")
+        elif subject_type:
+            key = (subject_type, subject_id)
+            if key in seen_edge_subjects:
+                errors.append(f"{prefix} duplicates an earlier edge-relation subject")
+            seen_edge_subjects.add(key)
+        _enum(errors, f"{prefix}.relation", relation.get("relation"), BOARD_EDGE_RELATIONS)
+        if not _nonempty(relation.get("source")):
+            errors.append(f"{prefix}.source is required")
+        if not _artifact_exists(relation.get("evidenceArtifact"), base_dir):
+            errors.append(f"{prefix}.evidenceArtifact must name an existing artifact")
 
     entry = record.get("pcbEntryGate")
     if not isinstance(entry, dict):
@@ -1299,6 +1361,15 @@ def _base_record() -> dict[str, Any]:
     return {
         "revision": "self-test-revision",
         "constraintBasis": "AUTHORED_BEFORE_PLACEMENT",
+        "boardBoundary": {
+            "binding": "LIVE_NATIVE",
+            "source": "saved/reopened native board-outline readback",
+            "outlineLayerId": 11,
+            "outerContourPrimitiveId": "outline-main",
+            "cutoutPrimitiveIds": [],
+            "requireLocked": True,
+            "edgeRelations": [],
+        },
         "pcbEntryGate": {"status": "CLEARED_FOR_PLACEMENT"},
         "placementFeasibility": {
             "status": "FEASIBLE",
@@ -1748,6 +1819,26 @@ def _self_test() -> int:
     invalid_basis = copy.deepcopy(_base_record())
     invalid_basis["constraintBasis"] = "DERIVED_FROM_LAYOUT"
     cases.append(("invalid-constraint-basis", invalid_basis, "BLOCKED", 2, False))
+
+    missing_board_boundary = copy.deepcopy(_base_record())
+    del missing_board_boundary["boardBoundary"]
+    cases.append(("missing-board-boundary", missing_board_boundary, "BLOCKED", 2, False))
+
+    unlocked_board_boundary = copy.deepcopy(_base_record())
+    unlocked_board_boundary["boardBoundary"]["requireLocked"] = False
+    cases.append(("unlocked-board-boundary", unlocked_board_boundary, "BLOCKED", 2, False))
+
+    invalid_edge_relation = copy.deepcopy(_base_record())
+    invalid_edge_relation["boardBoundary"]["edgeRelations"] = [
+        {
+            "subjectType": "CRITICAL_ZONE",
+            "subjectId": "U1_ANTENNA",
+            "relation": "ALLOWED_OVERHANG",
+            "source": "module integration drawing",
+            "evidenceArtifact": None,
+        }
+    ]
+    cases.append(("invalid-edge-relation", invalid_edge_relation, "BLOCKED", 2, False))
 
     for name, record, expected_gate, expected_code, expected_consistent in cases:
         report = validate_constraint_record(record, base_dir=None)

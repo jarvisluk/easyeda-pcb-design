@@ -141,8 +141,13 @@ obscure a single tier-1 finding.
   edge, corridor, plane, via field, quiet/thermal region, access path, and
   assembly volume conflict is resolved with current evidence.
 - The saved/reopened PCB has an exact-revision `easyeda_placement_audit.mjs`
-  report with `PLACEMENT_CLEAR_FOR_ROUTING`. Missing, unresolved, blocked, or
-  stale placement evidence is not replaced by a clean DRC.
+  schema-3 report with `PLACEMENT_CLEAR_FOR_ROUTING`, every required coverage
+  axis checked, and no `unverifiedAxes`. Missing, unresolved, blocked, or stale
+  placement evidence is not replaced by a clean DRC.
+- The report binds the locked native outer contour and declared cutouts by
+  primitive ID and proves pads, courtyards, and critical zones lie in board
+  material. Any edge overhang is subject-bound to sourced `ALLOWED_OVERHANG` or
+  `EDGE_ALIGNED` evidence; a general antenna exception is not accepted.
 - No ordinary via annular ring or drill intrudes into a pad, including same-net
   pads; every intentional overlap is bound by exact via ID, designator/pad, and
   filled/capped/planarized or documented land-pattern process evidence.

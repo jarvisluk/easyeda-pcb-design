@@ -5,6 +5,7 @@
 - Purpose and lifecycle position
 - Evidence authority
 - Constraint-record contract
+- Native board boundary and material containment
 - Via and pad geometry
 - Pad-complete component occupancy
 - Component courtyards and critical zones
@@ -31,13 +32,16 @@ unresolved placement report keeps a final baseline audit `UNVERIFIED FOR
 FABRICATION`. A current report with observed violations makes the PCB review
 `FAIL`. Neither state authorizes fabrication or ordering.
 
-Formal review accepts only placement-report schema 2, which contains own-pad
-courtyard containment, foreign pad overlap/clearance, pad/foreign-courtyard,
+Formal review accepts only placement-report schema 3, which contains native
+board-boundary identity and material containment, own-pad courtyard
+containment, foreign pad overlap/clearance, pad/foreign-courtyard,
 opposite-side courtyard, maximum-padstack-projection, unsupported-pad, and
-unsupported-via and dual-identity pad-owner results. It recomputes the result from every blocking,
+unsupported-via and dual-identity pad-owner results. It also requires a
+machine-readable coverage contract with no missing or unverified required axis.
+It recomputes the result from every blocking,
 unresolved, and stale array and verifies the constraint revision, fingerprint,
 and `CLEARED_FOR_PLACEMENT` consistency gate; it does not trust the top-level
-status alone. A legacy or incomplete schema 2 report remains unverified; rerun
+status alone. A legacy or incomplete report remains unverified; rerun
 it against the exact revision.
 
 ## Evidence authority
@@ -76,6 +80,15 @@ courtyard and clearance came from its real source.
 {
   "revision": "sha256:exact-design-fingerprint",
   "constraintBasis": "AUTHORED_BEFORE_PLACEMENT",
+  "boardBoundary": {
+    "binding": "LIVE_NATIVE",
+    "source": "saved/reopened native outline plus mechanical authority",
+    "outlineLayerId": 11,
+    "outerContourPrimitiveId": "exact-live-polyline-id",
+    "cutoutPrimitiveIds": [],
+    "requireLocked": true,
+    "edgeRelations": []
+  },
   "routingGeometry": {
     "allowedAnglesDeg": [0, 45, 90, 135],
     "hardRightAngleJunctions": "PROHIBITED_EXCEPT_PAD_OR_VIA",
@@ -124,6 +137,29 @@ courtyard and clearance came from its real source.
 Use PCB units of mil only for live geometry and fields ending in `Mil`. Use
 millimetres only for fields ending in `Mm`. Do not store dimensionless copied
 clearances.
+
+## Native board boundary and material containment
+
+Read the saved/reopened live Board Outline layer. A cleared record uses
+`boardBoundary.binding: LIVE_NATIVE`, names one exact native closed outer
+polyline and every native cutout polyline, and sets `requireLocked: true`.
+Loose Line/Arc primitives, undeclared extra contours, absent IDs, open or
+self-intersecting polygons, and declared/live layer mismatches remain
+unverified. `PLANNING_CANDIDATE` may bind an early floorplan artifact, but must
+be replaced with live native IDs before post-placement closure.
+
+Check every supported live pad, sourced assembly courtyard, and critical zone
+against the outer contour and cutouts. Pad copper has no overhang exception. A
+courtyard or critical zone may cross the outer contour only through an exact
+subject-bound `edgeRelations` entry using `ALLOWED_OVERHANG` or `EDGE_ALIGNED`
+with a mechanical/vendor source and evidence artifact. Cutout intersection is
+still blocking.
+
+Schema 3 reports `coverage.requiredAxes`, `checkedAxes`, `unverifiedAxes`, and
+`notApplicable`. Required axes are board containment, via/pad geometry,
+component occupancy, critical zones, human interfaces, and external
+interface/BOM policy. Implemented checks cannot clear the gate while a required
+axis is absent or unverified.
 
 ## Via and pad geometry
 
@@ -451,16 +487,21 @@ Use a new output path for every revision. Do not overwrite prior evidence.
 - `PLACEMENT_CLEAR_FOR_ROUTING`: no observed geometry/policy violation, no
   unsupported or unowned pad, every live pad is inside its owner's sourced
   courtyard, every component has a sourced courtyard, every BBox candidate has
-  exact pair coverage, and the constraint revision matches the live PCB.
+  exact pair coverage, every pad/courtyard/critical zone satisfies the native
+  board boundary or a sourced edge relation, coverage is complete, and the
+  constraint revision matches the live PCB.
 - `BLOCKED`: observed pad/via, own-pad/courtyard, foreign-pad, exact courtyard,
-  critical-zone, control, interface, or BOM-policy violation.
+  board-boundary/material-containment, critical-zone, control, interface, or
+  BOM-policy violation.
 - `UNRESOLVED`: missing owner/opposite-side courtyard, unsupported/unowned pad,
-  BBox-only collision, missing access evidence, or undeclared interface.
+  missing/ambiguous native boundary, incomplete coverage, BBox-only collision,
+  missing access evidence, or undeclared interface.
 - `STALE`: constraint/report identity does not match the current PCB.
 
 ## Invalidation and final review
 
-Moving or rotating a component, changing a footprint/MPN/model, adding or
+Changing the outline, cutouts, or edge relations; moving or rotating a
+component; changing a footprint/MPN/model; adding or
 moving a via, changing an interface, process, body/courtyard, access envelope,
 enclosure, or preferred-part policy invalidates placement closure. Rerun the
 constraint linter when the record changes and always rerun the placement audit.

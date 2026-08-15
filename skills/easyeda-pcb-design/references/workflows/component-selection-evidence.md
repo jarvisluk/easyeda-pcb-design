@@ -126,7 +126,7 @@ minimum schema. Replace every example value:
   "schematic": {
     "projectUuid": "project-uuid",
     "documentUuid": "schematic-page-uuid",
-    "fingerprintSchemaVersion": 5,
+    "fingerprintSchemaVersion": 6,
     "designFingerprint": "sha256:exact-live-design-fingerprint"
   },
   "invalidationPolicy": [

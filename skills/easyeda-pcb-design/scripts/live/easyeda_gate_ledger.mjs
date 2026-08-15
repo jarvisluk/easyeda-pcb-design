@@ -162,6 +162,12 @@ const OPERATION_OUTCOMES = Object.freeze([
   "UNKNOWN_TIMEOUT",
   "READ_ONLY",
 ]);
+const ATTEMPT_DISPOSITIONS = Object.freeze(["ACCEPTED", "REJECTED", "UNKNOWN", "READ_ONLY"]);
+const GATE_PROGRESS = Object.freeze(["NO_CHANGE", "CLOSED", "BLOCKED"]);
+
+function validTimestamp(value) {
+  return nonemptyString(value) && Number.isFinite(Date.parse(value));
+}
 
 // Resolve the gates this transaction must settle to be complete: the canonical
 // sequence truncated at the terminal gate for this branch and scope.
@@ -547,8 +553,12 @@ function analyzeOperationLog(log, options = {}) {
   if (!log || typeof log !== "object" || Array.isArray(log)) {
     return reject("operation log must be a JSON object");
   }
-  if (log.schemaVersion !== 1) {
-    return reject("operation log schemaVersion must be 1");
+  if (log.schemaVersion !== 2) {
+    return reject(
+      log.schemaVersion === 1
+        ? "operation log schemaVersion 1 predates mandatory timing and attempt telemetry"
+        : "operation log schemaVersion must be 2",
+    );
   }
   if (log.appendOnly !== true) {
     return reject("operation log must declare appendOnly: true");
@@ -559,6 +569,7 @@ function analyzeOperationLog(log, options = {}) {
   const entries = log.entries;
   const issues = [];
   const seenIds = new Set();
+  const seenAttempts = new Map();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     const prefix = "entries[" + index + "]";
@@ -575,6 +586,41 @@ function analyzeOperationLog(log, options = {}) {
     }
     if (!nonemptyString(entry.operation)) {
       issues.push(prefix + ".operation is required");
+    }
+    for (const field of ["transactionId", "gate", "attemptFamily"]) {
+      if (!nonemptyString(entry[field])) issues.push(prefix + "." + field + " is required");
+    }
+    if (!Number.isInteger(entry.attemptIndex) || entry.attemptIndex < 1) {
+      issues.push(prefix + ".attemptIndex must be a positive integer");
+    } else if (nonemptyString(entry.attemptFamily)) {
+      const attemptKey = entry.attemptFamily + "::" + entry.attemptIndex;
+      if (
+        seenAttempts.has(attemptKey) &&
+        seenAttempts.get(attemptKey) !== entry.transactionId
+      ) {
+        issues.push(prefix + " reuses attemptFamily/attemptIndex across transactions " + attemptKey);
+      }
+      seenAttempts.set(attemptKey, entry.transactionId);
+    }
+    if (!validTimestamp(entry.startedAt) || !validTimestamp(entry.endedAt)) {
+      issues.push(prefix + ".startedAt and .endedAt must be valid timestamps");
+    } else {
+      const measuredDuration = Date.parse(entry.endedAt) - Date.parse(entry.startedAt);
+      if (measuredDuration < 0) issues.push(prefix + ".endedAt precedes .startedAt");
+      if (!Number.isFinite(entry.durationMs) || entry.durationMs < 0) {
+        issues.push(prefix + ".durationMs must be a non-negative number");
+      } else if (Math.abs(entry.durationMs - measuredDuration) > 1) {
+        issues.push(prefix + ".durationMs does not match timestamp duration");
+      }
+    }
+    if (!ATTEMPT_DISPOSITIONS.includes(entry.attemptDisposition)) {
+      issues.push(prefix + ".attemptDisposition must be one of " + ATTEMPT_DISPOSITIONS.join(", "));
+    }
+    if (!GATE_PROGRESS.includes(entry.gateProgress)) {
+      issues.push(prefix + ".gateProgress must be one of " + GATE_PROGRESS.join(", "));
+    }
+    if (!Array.isArray(entry.evidence) || entry.evidence.some((item) => !nonemptyString(item))) {
+      issues.push(prefix + ".evidence must be an array of non-empty artifact paths");
     }
     if (!OPERATION_OUTCOMES.includes(entry.outcome)) {
       issues.push(
@@ -923,13 +969,23 @@ function selfTestLedger(overrides = {}) {
 
 function selfTestOperationLog(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     appendOnly: true,
     entries: [
       {
         id: "op-1",
+        transactionId: "tx-1",
+        gate: "PROJECT_BOUND",
+        attemptFamily: "project-binding",
+        attemptIndex: 1,
+        startedAt: "2026-08-14T00:00:00.000Z",
+        endedAt: "2026-08-14T00:00:01.000Z",
+        durationMs: 1000,
         operation: "sch_PrimitiveComponent.create U1",
         outcome: "COMMITTED",
+        attemptDisposition: "ACCEPTED",
+        gateProgress: "CLOSED",
+        evidence: ["binding.json"],
         semanticReadback: "reopened page; U1 present with stable unique id",
       },
     ],
@@ -1128,6 +1184,19 @@ async function runSelfTest() {
     if (appendOnlyMissing.status !== "UNVERIFIED") {
       throw new Error("a log without appendOnly was accepted");
     }
+    const legacyTiming = analyzeOperationLog({
+      schemaVersion: 1,
+      appendOnly: true,
+      entries: [],
+    });
+    if (legacyTiming.status !== "UNVERIFIED" || !/predates mandatory timing/.test(legacyTiming.reason)) {
+      throw new Error("legacy operation log did not remain historical-only evidence");
+    }
+    const badDuration = selfTestOperationLog();
+    badDuration.entries[0].durationMs = 998;
+    if (analyzeOperationLog(badDuration).status !== "UNVERIFIED") {
+      throw new Error("operation log accepted inconsistent timestamp duration");
+    }
 
     if (!parseArgs(["--ledger", "l.json"]).ledger) {
       throw new Error("--ledger was not parsed");
@@ -1306,6 +1375,8 @@ export {
   GATE_STATES,
   GATE_STATE_ALIASES,
   OPERATION_OUTCOMES,
+  ATTEMPT_DISPOSITIONS,
+  GATE_PROGRESS,
   SCOPES,
   SCOPE_TERMINAL_GATE,
   analyzeCompletion,

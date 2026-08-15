@@ -228,6 +228,16 @@ replace every example value and source:
 {
   "revision": "exact PCB fingerprint or planning:sha256:<hex>",
   "planningRevision": null,
+  "constraintBasis": "AUTHORED_BEFORE_PLACEMENT",
+  "boardBoundary": {
+    "binding": "LIVE_NATIVE",
+    "source": "mechanical authority plus saved/reopened native outline readback",
+    "outlineLayerId": 11,
+    "outerContourPrimitiveId": "exact-live-polyline-id",
+    "cutoutPrimitiveIds": [],
+    "requireLocked": true,
+    "edgeRelations": []
+  },
   "pcbEntryGate": {
     "status": "UNRESOLVED"
   },
@@ -404,6 +414,14 @@ replace every example value and source:
   ]
 }
 ```
+
+During pre-PCB planning, use `boardBoundary.binding: PLANNING_CANDIDATE` with
+the `outlineCandidateId` and an existing `geometryArtifact`. After the PCB is
+created, replace that planning binding with `LIVE_NATIVE`; do not copy a
+planning contour ID into a live record. Every intentional connector/module
+overhang or edge alignment becomes a subject-bound `edgeRelations` entry with
+its source and evidence artifact. The placement audit owns the live polygon and
+material-containment semantics.
 
 The four aggregate states have exact meanings:
 

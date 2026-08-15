@@ -139,6 +139,8 @@ node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 
 Work may continue only when the command exits with code `0` and reports `ready: true`. Project and document UUIDs are bound before writes. Every operation is awaited, and semantic readback from the saved and reopened design is authoritative.
 
+Production routing and destructive repair additionally require a schema-2 timed operation log, a `CONTINUE` execution-budget result, a schema-3 placement report proving native board-material containment, and a native `.epro` checkpoint proven by a separate probe restore. Route and repair operations are declared as JSON plans and executed through the shared transaction runners; a gate advances only after saved/reopened current-state and repeated detailed-DRC verification.
+
 Authorization profile and transaction type are separate routing dimensions:
 
 - **USER_OWNED** is the default. Destructive or bulk operations—such as deletion, mass net changes, broad synchronization/overwrite, or a copper rebuild that could discard work—require operation-specific confirmation.

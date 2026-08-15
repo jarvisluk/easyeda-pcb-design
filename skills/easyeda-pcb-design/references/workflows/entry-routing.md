@@ -59,7 +59,10 @@ requirements baseline, keep every artifact under it in `evidence/audits/`,
 `evidence/calculations/`, `evidence/netlist/`, `evidence/snapshots/`, and
 `evidence/readbacks/`, and state the chosen directory once so later commands and
 reports agree. [live-build-gates.md](live-build-gates.md) repeats this contract
-for live work.
+for live work. Keep `execution-budget.json`, `revision-manifest.json`, and
+data-driven transaction plans at the project root; keep native `.epro` files and
+their manifests in `evidence/snapshots/`, and operation/current-state/gate checks
+in `evidence/readbacks/`.
 
 Create `requirements-baseline.json` before architecture or part selection. It is
 the authoritative, revisioned requirements record; a generated `brief.md` is

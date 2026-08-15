@@ -31,6 +31,15 @@ const EXIT = Object.freeze({
   STALE: 4,
 });
 
+const REQUIRED_COVERAGE_AXES = Object.freeze([
+  "boardMechanicalContainment",
+  "viaPadGeometry",
+  "componentOccupancy",
+  "criticalPlacementZones",
+  "humanInterfaces",
+  "externalInterfacesAndBom",
+]);
+
 function usage() {
   return `Usage:
   node scripts/audits/easyeda_placement_audit.mjs --layout-constraints FILE \\
@@ -179,6 +188,11 @@ async function loadConstraintEvidence(options) {
 function summarizeFindings(checks) {
   const failures = [];
   const unverified = [];
+  if (checks.boardContainment.violations.length) {
+    failures.push(
+      `${checks.boardContainment.violations.length} board-boundary containment or native-outline violation(s)`,
+    );
+  }
   if (checks.viaPad.violations.length) {
     failures.push(
       `${checks.viaPad.violations.length} ordinary via/pad clearance or overlap violation(s)`,
@@ -285,7 +299,43 @@ function summarizeFindings(checks) {
       `${checks.interfacesAndBom.unverified.length} external interface(s) remain undeclared or unverified`,
     );
   }
+  if (checks.boardContainment.unverified.length) {
+    unverified.push(
+      `${checks.boardContainment.unverified.length} board-boundary identity or geometry result(s) remain unverified`,
+    );
+  }
   return { failures, unverified };
+}
+
+function coverageForChecks(checks) {
+  const unverifiedAxes = [];
+  if (checks.boardContainment.unverified.length) {
+    unverifiedAxes.push("boardMechanicalContainment");
+  }
+  if (checks.viaPad.unsupportedPads.length || checks.viaPad.unsupportedVias.length) {
+    unverifiedAxes.push("viaPadGeometry");
+  }
+  if (
+    checks.componentPlacement.unsupportedPadOccupancy.length ||
+    checks.componentPlacement.unownedPads.length ||
+    checks.componentPlacement.componentIdentityConflicts.length ||
+    checks.componentPlacement.invalidEnvelopes.length ||
+    checks.componentPlacement.missingEnvelopeDesignators.length ||
+    checks.componentPlacement.missingOppositeSideCourtyardDesignators.length ||
+    checks.componentPlacement.missingPadstackProjectionEvidence.length ||
+    checks.componentPlacement.unresolvedBboxCandidates.length
+  ) unverifiedAxes.push("componentOccupancy");
+  if (checks.componentPlacement.criticalZoneUnverified.length) {
+    unverifiedAxes.push("criticalPlacementZones");
+  }
+  if (checks.humanInterfaces.unverified.length) unverifiedAxes.push("humanInterfaces");
+  if (checks.interfacesAndBom.unverified.length) unverifiedAxes.push("externalInterfacesAndBom");
+  return {
+    requiredAxes: [...REQUIRED_COVERAGE_AXES],
+    checkedAxes: [...REQUIRED_COVERAGE_AXES],
+    unverifiedAxes: [...new Set(unverifiedAxes)],
+    notApplicable: [],
+  };
 }
 
 /**
@@ -327,6 +377,7 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
   const fingerprint = designFingerprint(raw);
   const checks = analyzePlacementGeometry(raw, constraintEvidence.record);
   const findings = summarizeFindings(checks);
+  const coverage = coverageForChecks(checks);
   const stale = [];
   if (constraintEvidence.record.revision !== fingerprint) {
     stale.push(
@@ -350,7 +401,7 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
   else if (findings.failures.length) status = STATUS.BLOCKED;
   else if (findings.unverified.length) status = STATUS.UNRESOLVED;
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "easyeda-placement-audit",
     status,
     fabricationRelease: false,
@@ -374,6 +425,7 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
       consistencyGateStatus: constraintEvidence.report.gateStatus,
     },
     checks,
+    coverage,
     failures: findings.failures,
     unverified: findings.unverified,
     stale,
@@ -381,6 +433,7 @@ function analyzePlacement(raw, constraintEvidence, source = { kind: "offline" })
       "EasyEDA component BBox includes non-authoritative footprint graphics and is only a collision screen.",
       "A clear result requires a sourced assembly courtyard for every component and proves every supported live pad is contained by its owner's courtyard; silkscreen is not accepted.",
       "Cross-component occupancy checks compare sourced courtyards plus live pad copper, including through-hole pads across both sides.",
+      "Board containment compares saved/reopened native outline primitives with every supported live pad, sourced courtyard, and critical placement zone; declared edge overhangs require separate evidence.",
       "Ellipse and oblong pad clearance uses a conservative polygon approximation; unsupported shapes remain unverified.",
       "The audit does not prove enclosure, cable, finger/tool, solder fillet, paste, thermal, or fabricator capability without the referenced evidence.",
       "Run against the saved/reopened PCB; a live unsaved editor state cannot close exact-revision evidence.",
@@ -415,7 +468,8 @@ function fixture() {
     kind: "pcb",
     project: { uuid: "placement-project", name: "Placement Test" },
     document: { uuid: "placement-pcb", name: "PCB", documentType: 3 },
-    layers: [{ id: 1, name: "Top Layer" }],
+    boardOutlineLayerId: 11,
+    layers: [{ id: 1, name: "Top Layer" }, { id: 11, name: "Board Outline" }],
     netNames: ["EN", "GND"],
     components: [
       {
@@ -460,6 +514,16 @@ function fixture() {
     ],
     lines: [],
     arcs: [],
+    polylines: [
+      {
+        primitiveId: "outline-main",
+        layer: 11,
+        net: "",
+        locked: true,
+        closed: true,
+        points: [[-200, -200], [700, -200], [700, 200], [-200, 200], [-200, -200]],
+      },
+    ],
     segments: [],
     vias: [{ primitiveId: "via-en", net: "EN", x: 80, y: 0, diameter: 24, holeDiameter: 12 }],
     pours: [],
@@ -470,6 +534,15 @@ function constraintFixture(raw) {
   return {
     revision: designFingerprint(raw),
     constraintBasis: "AUTHORED_BEFORE_PLACEMENT",
+    boardBoundary: {
+      binding: "LIVE_NATIVE",
+      source: "saved/reopened native board-outline readback",
+      outlineLayerId: 11,
+      outerContourPrimitiveId: "outline-main",
+      cutoutPrimitiveIds: [],
+      requireLocked: true,
+      edgeRelations: [],
+    },
     assembly: {
       foreignPadCopperClearanceMm: 0.1524,
       foreignPadCopperClearanceSource: "fabricator copper clearance rule revision 1",
@@ -545,6 +618,129 @@ function selfTest() {
   const clear = analyzePlacement(clearRaw, evidenceFixture(clearRecord), { kind: "self-test" });
   if (clear.status !== STATUS.CLEAR) {
     throw new Error(`clear fixture returned ${clear.status}: ${JSON.stringify(clear.unverified)}`);
+  }
+
+  const outsideRaw = structuredClone(clearRaw);
+  outsideRaw.components[0].y = 190;
+  const outsideRecord = constraintFixture(outsideRaw);
+  const outside = analyzePlacement(outsideRaw, evidenceFixture(outsideRecord), { kind: "self-test" });
+  if (
+    outside.status !== STATUS.BLOCKED ||
+    outside.checks.boardContainment.courtyardOutsideBoard.length !== 1
+  ) {
+    throw new Error("courtyard outside the native board outline did not block placement");
+  }
+
+  const esp32c3Raw = structuredClone(clearRaw);
+  esp32c3Raw.polylines[0].points = [[0, 0], [2200, 0], [2200, 1500], [0, 1500], [0, 0]];
+  esp32c3Raw.components[0].x = 100;
+  esp32c3Raw.components[0].y = 100;
+  esp32c3Raw.components[1].x = 300;
+  esp32c3Raw.components[1].y = 100;
+  esp32c3Raw.pads[0].x = 120;
+  esp32c3Raw.pads[0].y = 100;
+  esp32c3Raw.vias[0].x = 180;
+  esp32c3Raw.vias[0].y = 100;
+  esp32c3Raw.components.push({
+    primitiveId: "u1-esp32c3",
+    designator: "U1",
+    name: "ESP32-C3-MINI-1",
+    manufacturerPartNumber: "ESP32-C3-MINI-1-N4",
+    footprint: { uuid: "fp-esp32c3", name: "ESP32-C3-MINI-1" },
+    layer: 1,
+    x: 1100,
+    y: 1305.2,
+    rotation: 0,
+    bbox: { minX: 820, minY: 975.2, maxX: 1380, maxY: 1635.2 },
+  });
+  const esp32c3Record = constraintFixture(esp32c3Raw);
+  esp32c3Record.assemblyEnvelopes.push({
+    designator: "U1",
+    source: "ESP32-C3 module integration drawing regression fixture",
+    courtyard: { type: "RECT", widthMil: 560, heightMil: 660, coordinates: "COMPONENT_LOCAL" },
+  });
+  esp32c3Record.criticalPlacementZones.push({
+    id: "U1_ANTENNA_ZONE",
+    ownerDesignator: "U1",
+    purpose: "module antenna clearance",
+    source: "ESP32-C3 module integration drawing regression fixture",
+    allowedDesignators: [],
+    geometry: {
+      type: "RECT",
+      widthMil: 560,
+      heightMil: 300,
+      centerXMil: 0,
+      centerYMil: 250,
+      coordinates: "COMPONENT_LOCAL",
+    },
+  });
+  const esp32c3Boundary = analyzePlacement(
+    esp32c3Raw,
+    evidenceFixture(esp32c3Record),
+    { kind: "self-test" },
+  );
+  if (
+    esp32c3Boundary.status !== STATUS.BLOCKED ||
+    esp32c3Boundary.checks.boardContainment.courtyardOutsideBoard.length !== 1 ||
+    esp32c3Boundary.checks.boardContainment.criticalZoneOutsideBoard.length !== 1
+  ) {
+    throw new Error("ESP32-C3 U1 y=1305.2 board-edge regression did not block placement");
+  }
+
+  const antennaRaw = structuredClone(clearRaw);
+  const antennaRecord = constraintFixture(antennaRaw);
+  antennaRecord.criticalPlacementZones.push({
+    id: "SW1_ANTENNA_ZONE",
+    ownerDesignator: "SW1",
+    purpose: "module antenna overhang",
+    source: "module integration drawing revision 1",
+    allowedDesignators: [],
+    geometry: {
+      type: "RECT",
+      widthMil: 80,
+      heightMil: 180,
+      centerXMil: 0,
+      centerYMil: 180,
+      coordinates: "COMPONENT_LOCAL",
+    },
+  });
+  antennaRecord.boardBoundary.edgeRelations.push({
+    subjectType: "CRITICAL_ZONE",
+    subjectId: "SW1_ANTENNA_ZONE",
+    relation: "ALLOWED_OVERHANG",
+    source: "module integration drawing revision 1",
+    evidenceArtifact: "antenna-edge-study.json",
+  });
+  const antennaOverhang = analyzePlacement(
+    antennaRaw,
+    evidenceFixture(antennaRecord),
+    { kind: "self-test" },
+  );
+  if (antennaOverhang.status !== STATUS.CLEAR) {
+    throw new Error(`documented antenna overhang returned ${antennaOverhang.status}`);
+  }
+
+  const missingBoundaryRecord = constraintFixture(clearRaw);
+  delete missingBoundaryRecord.boardBoundary;
+  const missingBoundary = analyzePlacement(
+    clearRaw,
+    evidenceFixture(missingBoundaryRecord),
+    { kind: "self-test" },
+  );
+  if (missingBoundary.status !== STATUS.UNRESOLVED) {
+    throw new Error("missing board boundary did not keep placement unresolved");
+  }
+
+  const unlockedRaw = structuredClone(clearRaw);
+  unlockedRaw.polylines[0].locked = false;
+  const unlockedRecord = constraintFixture(unlockedRaw);
+  const unlocked = analyzePlacement(
+    unlockedRaw,
+    evidenceFixture(unlockedRecord),
+    { kind: "self-test" },
+  );
+  if (unlocked.status !== STATUS.BLOCKED) {
+    throw new Error("unlocked required native outline did not block placement");
   }
 
   const viaRaw = structuredClone(clearRaw);
@@ -1153,6 +1349,11 @@ function selfTest() {
   process.stdout.write(
     `${JSON.stringify({
       clear: clear.status,
+      courtyardOutsideBoard: outside.status,
+      esp32c3U1BoundaryRegression: esp32c3Boundary.status,
+      documentedAntennaOverhang: antennaOverhang.status,
+      missingBoardBoundary: missingBoundary.status,
+      unlockedBoardBoundary: unlocked.status,
       sameNetViaIntrusion: viaBlocked.status,
       declaredSpecialVia: special.status,
       duplicateViaIdentity: duplicateVia.status,

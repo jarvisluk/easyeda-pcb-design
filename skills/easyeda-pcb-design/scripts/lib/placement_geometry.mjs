@@ -519,6 +519,244 @@ function polygonContainsPolygon(container, subject) {
   return true;
 }
 
+function normalizedClosedPolygon(points) {
+  if (!Array.isArray(points)) return undefined;
+  const polygon = points
+    .map((point) => Array.isArray(point)
+      ? { x: finiteNumber(point[0]), y: finiteNumber(point[1]) }
+      : { x: finiteNumber(point?.x), y: finiteNumber(point?.y) })
+    .filter((point) => point.x !== undefined && point.y !== undefined);
+  if (polygon.length > 1) {
+    const first = polygon[0];
+    const last = polygon.at(-1);
+    if (Math.hypot(first.x - last.x, first.y - last.y) <= EPSILON) polygon.pop();
+  }
+  return validSimplePolygon(polygon) ? polygon : undefined;
+}
+
+function analyzeBoardContainment(raw, constraintRecord = {}) {
+  const boundary = constraintRecord?.boardBoundary;
+  const violations = [];
+  const unverified = [];
+  const result = {
+    outerContour: null,
+    cutouts: [],
+    padOutsideBoard: [],
+    courtyardOutsideBoard: [],
+    criticalZoneOutsideBoard: [],
+    cutoutIntersections: [],
+    violations,
+    unverified,
+  };
+  if (!boundary || typeof boundary !== "object" || Array.isArray(boundary)) {
+    unverified.push({ reason: "layout constraints lack boardBoundary" });
+    return result;
+  }
+  const outlineLayerId = finiteNumber(boundary.outlineLayerId);
+  if (outlineLayerId === undefined) {
+    unverified.push({ reason: "boardBoundary.outlineLayerId is missing or non-numeric" });
+    return result;
+  }
+  if (finiteNumber(raw?.boardOutlineLayerId) !== outlineLayerId) {
+    unverified.push({
+      reason: "declared board-outline layer does not match saved/reopened live layer identity",
+      declaredLayerId: outlineLayerId,
+      liveLayerId: raw?.boardOutlineLayerId ?? null,
+    });
+  }
+  const polylines = (Array.isArray(raw?.polylines) ? raw.polylines : [])
+    .filter((item) => finiteNumber(item?.layer) === outlineLayerId);
+  const byId = new Map(
+    polylines
+      .filter((item) => typeof item?.primitiveId === "string" && item.primitiveId.trim())
+      .map((item) => [item.primitiveId, item]),
+  );
+  const outerId = boundary.outerContourPrimitiveId;
+  const outer = typeof outerId === "string" ? byId.get(outerId) : undefined;
+  if (!outer) {
+    unverified.push({
+      reason: "declared native outer-contour primitive is absent from saved/reopened readback",
+      primitiveId: outerId || null,
+    });
+    return result;
+  }
+  const outerPolygon = outer.closed === true ? normalizedClosedPolygon(outer.points) : undefined;
+  if (!outerPolygon) {
+    unverified.push({
+      reason: "native outer contour is not a closed simple polygon",
+      primitiveId: outerId,
+    });
+    return result;
+  }
+  if (boundary.requireLocked === true && outer.locked !== true) {
+    violations.push({
+      reason: "accepted board boundary requires a locked native outer contour",
+      primitiveId: outerId,
+    });
+  }
+  result.outerContour = {
+    primitiveId: outerId,
+    locked: outer.locked === true,
+    pointCount: outerPolygon.length,
+  };
+
+  const cutoutIds = Array.isArray(boundary.cutoutPrimitiveIds)
+    ? boundary.cutoutPrimitiveIds
+    : [];
+  const cutoutPolygons = [];
+  for (const primitiveId of cutoutIds) {
+    const item = byId.get(primitiveId);
+    const polygon = item?.closed === true ? normalizedClosedPolygon(item.points) : undefined;
+    if (!item || !polygon) {
+      unverified.push({
+        reason: "declared cutout is absent or is not a closed simple native polygon",
+        primitiveId,
+      });
+      continue;
+    }
+    if (!polygonContainsPolygon(outerPolygon, polygon)) {
+      violations.push({
+        reason: "declared cutout is not contained by the outer board contour",
+        primitiveId,
+      });
+    }
+    if (boundary.requireLocked === true && item.locked !== true) {
+      violations.push({
+        reason: "accepted board boundary requires locked native cutouts",
+        primitiveId,
+      });
+    }
+    cutoutPolygons.push({ primitiveId, polygon });
+    result.cutouts.push({
+      primitiveId,
+      locked: item.locked === true,
+      pointCount: polygon.length,
+    });
+  }
+  const declaredIds = new Set([outerId, ...cutoutIds]);
+  const unexpectedPolylines = polylines
+    .map((item) => item.primitiveId)
+    .filter((primitiveId) => !declaredIds.has(primitiveId));
+  const loosePrimitives = [
+    ...(Array.isArray(raw?.lines) ? raw.lines : []),
+    ...(Array.isArray(raw?.arcs) ? raw.arcs : []),
+  ].filter((item) => finiteNumber(item?.layer) === outlineLayerId);
+  if (unexpectedPolylines.length || loosePrimitives.length) {
+    unverified.push({
+      reason: "board-outline layer contains undeclared native contours or loose line/arc primitives",
+      unexpectedPolylineIds: unexpectedPolylines,
+      loosePrimitiveIds: loosePrimitives.map((item) => item.primitiveId || null),
+    });
+  }
+
+  const components = Array.isArray(raw?.components) ? raw.components : [];
+  const componentByDesignator = new Map(
+    components.filter((item) => item?.designator).map((item) => [item.designator, item]),
+  );
+  const relations = new Map();
+  for (const relation of Array.isArray(boundary.edgeRelations) ? boundary.edgeRelations : []) {
+    if (!relation || typeof relation !== "object") continue;
+    relations.set(`${relation.subjectType}:${relation.subjectId}`, relation);
+  }
+  const outsideAllowed = (subjectType, subjectId) => {
+    const relation = relations.get(`${subjectType}:${subjectId}`);
+    return relation && ["ALLOWED_OVERHANG", "EDGE_ALIGNED"].includes(relation.relation);
+  };
+  const checkMaterialContainment = (polygon, finding, outsideCollection) => {
+    if (!polygonContainsPolygon(outerPolygon, polygon)) outsideCollection.push(finding);
+    for (const cutout of cutoutPolygons) {
+      if (polygonsIntersect(polygon, cutout.polygon)) {
+        result.cutoutIntersections.push({ ...finding, cutoutPrimitiveId: cutout.primitiveId });
+      }
+    }
+  };
+
+  const padGeometry = padPolygonsByOwner(raw, constraintRecord);
+  for (const entry of padGeometry.converted) {
+    checkMaterialContainment(
+      entry.polygon,
+      {
+        subjectType: "PAD",
+        subjectId: entry.pad.primitiveId || null,
+        designator: entry.pad.designator || "",
+        padNumber: String(entry.pad.padNumber || ""),
+      },
+      result.padOutsideBoard,
+    );
+  }
+
+  for (const envelope of Array.isArray(constraintRecord.assemblyEnvelopes)
+    ? constraintRecord.assemblyEnvelopes
+    : []) {
+    const polygon = envelopePolygon(envelope, componentByDesignator);
+    if (!polygon) continue;
+    const finding = {
+      subjectType: "ASSEMBLY_ENVELOPE",
+      subjectId: envelope.designator || null,
+      designator: envelope.designator || "",
+      source: envelope.source || null,
+    };
+    if (!polygonContainsPolygon(outerPolygon, polygon)) {
+      if (!outsideAllowed(finding.subjectType, finding.subjectId)) {
+        result.courtyardOutsideBoard.push(finding);
+      }
+    }
+    for (const cutout of cutoutPolygons) {
+      if (polygonsIntersect(polygon, cutout.polygon)) {
+        result.cutoutIntersections.push({ ...finding, cutoutPrimitiveId: cutout.primitiveId });
+      }
+    }
+  }
+
+  for (const zone of Array.isArray(constraintRecord.criticalPlacementZones)
+    ? constraintRecord.criticalPlacementZones
+    : []) {
+    const polygon = envelopePolygon(
+      { ownerDesignator: zone.ownerDesignator, geometry: zone.geometry },
+      componentByDesignator,
+    );
+    if (!polygon) continue;
+    const finding = {
+      subjectType: "CRITICAL_ZONE",
+      subjectId: zone.id || null,
+      ownerDesignator: zone.ownerDesignator || "",
+      source: zone.source || null,
+    };
+    if (!polygonContainsPolygon(outerPolygon, polygon)) {
+      if (!outsideAllowed(finding.subjectType, finding.subjectId)) {
+        result.criticalZoneOutsideBoard.push(finding);
+      }
+    }
+    for (const cutout of cutoutPolygons) {
+      if (polygonsIntersect(polygon, cutout.polygon)) {
+        result.cutoutIntersections.push({ ...finding, cutoutPrimitiveId: cutout.primitiveId });
+      }
+    }
+  }
+
+  for (const relation of Array.isArray(boundary.edgeRelations) ? boundary.edgeRelations : []) {
+    if (
+      !relation ||
+      !["ASSEMBLY_ENVELOPE", "CRITICAL_ZONE"].includes(relation.subjectType) ||
+      !["ALLOWED_OVERHANG", "EDGE_ALIGNED"].includes(relation.relation) ||
+      typeof relation.source !== "string" ||
+      !relation.source.trim() ||
+      typeof relation.evidenceArtifact !== "string" ||
+      !relation.evidenceArtifact.trim()
+    ) {
+      unverified.push({ reason: "boardBoundary edge relation is incomplete or unsupported", relation });
+    }
+  }
+
+  violations.push(
+    ...result.padOutsideBoard,
+    ...result.courtyardOutsideBoard,
+    ...result.criticalZoneOutsideBoard,
+    ...result.cutoutIntersections,
+  );
+  return result;
+}
+
 function analyzeViaPadGeometry(raw, constraintRecord = {}) {
   const standardVia = constraintRecord?.routingGeometry?.standardVia || {};
   const requiredClearanceMil = Number(standardVia.viaToPadCopperClearanceMm) * MM_TO_MIL;
@@ -1160,6 +1398,7 @@ function analyzeInterfacesAndBom(raw, constraintRecord = {}) {
 
 function analyzePlacementGeometry(raw, constraintRecord = {}) {
   return {
+    boardContainment: analyzeBoardContainment(raw, constraintRecord),
     viaPad: analyzeViaPadGeometry(raw, constraintRecord),
     componentPlacement: analyzeComponentPlacement(raw, constraintRecord),
     humanInterfaces: analyzeHumanInterfaces(raw, constraintRecord),
@@ -1169,6 +1408,7 @@ function analyzePlacementGeometry(raw, constraintRecord = {}) {
 
 export {
   MM_TO_MIL,
+  analyzeBoardContainment,
   analyzeComponentPlacement,
   analyzeHumanInterfaces,
   analyzeInterfacesAndBom,

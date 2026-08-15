@@ -25,7 +25,7 @@ const DECISION_VALUES = Object.freeze({
   FAIL: "FAIL",
   UNVERIFIED: "UNVERIFIED FOR FABRICATION",
 });
-const DESIGN_FINGERPRINT_SCHEMA_VERSION = 5;
+const DESIGN_FINGERPRINT_SCHEMA_VERSION = 6;
 
 const DEFAULT_BRIDGE_PORTS = Object.freeze(
   Array.from({ length: 10 }, (_, index) => 49620 + index),
@@ -602,6 +602,21 @@ function designFingerprintPayload(raw = {}) {
       solderMaskExpansion: item.solderMaskExpansion ?? null,
     }))
     .sort(primitiveSort);
+  const polylines = (raw.polylines || [])
+    .map((item) => ({
+      primitiveId: item.primitiveId ?? null,
+      net: item.net || "",
+      layer: item.layer ?? null,
+      lineWidth: item.lineWidth ?? null,
+      locked: item.locked === true,
+      closed: item.closed === true,
+      points: Array.isArray(item.points)
+        ? item.points.map((point) =>
+            Array.isArray(point) ? [point[0] ?? null, point[1] ?? null] : null,
+          )
+        : null,
+    }))
+    .sort(primitiveSort);
   const pours = (raw.pours || [])
     .map((item) => ({
       primitiveId: item.primitiveId ?? null,
@@ -700,6 +715,7 @@ function designFingerprintPayload(raw = {}) {
     components,
     pads,
     segments,
+    polylines,
     vias,
     pours,
   };

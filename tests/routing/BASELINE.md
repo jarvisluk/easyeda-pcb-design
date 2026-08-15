@@ -33,7 +33,7 @@ standing to infer layout conclusions it has no basis for.
 
 ## antenna-module-selection
 
-Baseline: PASS, recorded 2026-08-12 against the current revision.
+Baseline: PASS, rerun 2026-08-15 against the repository skill revision.
 
 The reply classified no design, phase 1, guide, bounded scope to phase 2, and
 loaded `entry-routing.md`, `component-selection-evidence.md`,
@@ -52,10 +52,13 @@ Two behaviors worth preserving beyond the recorded expectations:
   better answer than either fixed tier, which is why the case accepts both.
 - It named the artifact phase 1 needs without authoring it, and predicted the
   intake lint would report unresolved items as the to-do list, not a failure.
+- It explicitly kept `RADIO_ANTENNA` as a primary-function decision and required
+  numbered-pad-to-board-edge orientation closure before later placement, while
+  making no fabrication/order conclusion for ordinary guidance.
 
 ## pcie-drc-order-readiness
 
-Baseline: PASS, recorded 2026-08-12 against the current revision.
+Baseline: PASS, rerun 2026-08-15 against the repository skill revision.
 
 The reply reached `UNVERIFIED FOR FABRICATION` and held every part of the safety
 boundary this case exists to protect:
@@ -71,6 +74,10 @@ boundary this case exists to protect:
 - reported that no manufacturing outputs were reviewed, as a finding rather than
   as out of scope;
 - stated plainly that the result is not authorization to fabricate or order.
+
+The rerun also started review ownership at phase 1, named upstream requirements,
+part, schematic, and handoff evidence as in scope, and stated that no
+manufacturing outputs or revision-bound high-speed evidence had been reviewed.
 
 It also treated the self-reported entry state as a claim rather than a fact,
 noting entry state must come from the live document. That is the correct reading

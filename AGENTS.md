@@ -91,6 +91,12 @@ node skills/easyeda-pcb-design/scripts/live/easyeda_identity_preflight.mjs --sel
 node skills/easyeda-pcb-design/scripts/live/easyeda_revision_guard.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_repair_snapshot.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_gate_ledger.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_execution_budget.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_native_checkpoint.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/inspect_current_state.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/route_transaction.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/repair_transaction.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/verify_gate.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_placement_audit.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_crystal_clock_audit.mjs --self-test
 python3 skills/easyeda-pcb-design/scripts/lints/easyeda_stackup_decision_lint.py --self-test

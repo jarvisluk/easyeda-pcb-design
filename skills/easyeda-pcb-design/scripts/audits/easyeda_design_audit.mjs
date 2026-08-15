@@ -506,7 +506,10 @@ function placementAuditClearance(report, expected = {}) {
     };
   }
   const placement = report.checks?.componentPlacement;
+  const boardContainment = report.checks?.boardContainment;
   const arrayContracts = [
+    [boardContainment, "violations", "blocking"],
+    [boardContainment, "unverified", "unresolved"],
     [report.checks?.viaPad, "violations", "blocking"],
     [report.checks?.viaPad, "unsupportedPads", "unresolved"],
     [report.checks?.viaPad, "unsupportedVias", "unresolved"],
@@ -530,9 +533,28 @@ function placementAuditClearance(report, expected = {}) {
     [report.checks?.interfacesAndBom, "failures", "blocking"],
     [report.checks?.interfacesAndBom, "unverified", "unresolved"],
   ];
+  const requiredCoverageAxes = [
+    "boardMechanicalContainment",
+    "viaPadGeometry",
+    "componentOccupancy",
+    "criticalPlacementZones",
+    "humanInterfaces",
+    "externalInterfacesAndBom",
+  ];
+  const checkedCoverageAxes = new Set(report.coverage?.checkedAxes || []);
+  const coverageComplete =
+    Array.isArray(report.coverage?.requiredAxes) &&
+    Array.isArray(report.coverage?.checkedAxes) &&
+    Array.isArray(report.coverage?.unverifiedAxes) &&
+    Array.isArray(report.coverage?.notApplicable) &&
+    requiredCoverageAxes.every((axis) =>
+      report.coverage.requiredAxes.includes(axis) && checkedCoverageAxes.has(axis)) &&
+    report.coverage.unverifiedAxes.length === 0;
   if (
-    report.schemaVersion !== 2 ||
+    report.schemaVersion !== 3 ||
     !placement ||
+    !boardContainment ||
+    !coverageComplete ||
     arrayContracts.some(([owner, field]) => !owner || !Array.isArray(owner[field])) ||
     !Array.isArray(report.failures) ||
     !Array.isArray(report.unverified) ||
@@ -541,7 +563,7 @@ function placementAuditClearance(report, expected = {}) {
     return {
       cleared: false,
       blocking: false,
-      reason: "placement report predates or omits complete schema 2 gate evidence",
+      reason: "placement report predates or omits complete schema 3 coverage and board-containment evidence",
     };
   }
   if (
@@ -613,8 +635,10 @@ function placementAuditClearance(report, expected = {}) {
   };
 }
 
-function collectorCode() {
+function collectorCode(options = {}) {
+  const includeDrc = options.includeDrc !== false;
   return `
+const includeDrc = ${includeDrc};
 const project = await eda.dmt_Project.getCurrentProjectInfo();
 if (!project) throw new Error("No EasyEDA project is open");
 const documentInfo = await eda.dmt_SelectControl.getCurrentDocumentInfo();
@@ -640,7 +664,18 @@ const polygonPoints = (polygon) => {
   if (!polygon) return [];
   if (typeof polygon.discretize === "function") {
     try {
-      return polygon.discretize() || [];
+      const discretized = polygon.discretize() || [];
+      const points = discretized
+        .map((point) => pointFrom(point?.x, point?.y))
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+      if (points.length > 2) {
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (first.x !== last.x || first.y !== last.y) {
+          points.push(pointFrom(first.x, first.y));
+        }
+      }
+      return points;
     } catch {}
   }
   let source = null;
@@ -727,7 +762,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
     net: value(wire, "getState_Net", "net") || "",
     line: value(wire, "getState_Line", "line") || null,
   }));
-  const drc = await eda.sch_Drc.check(true, false, true);
+  const drc = includeDrc ? await eda.sch_Drc.check(true, false, true) : null;
   // Symbol placement geometry. The BBox API is beta and can include the
   // designator, value, and other attribute text, so it screens crowding and
   // page overrun; it never proves a symbol-body collision on its own.
@@ -771,10 +806,10 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.SCHEMATIC_PAGE}) {
 }
 
 if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
-  const drcRuleBefore = {
+  const drcRuleBefore = includeDrc ? {
     name: await eda.pcb_Drc.getCurrentRuleConfigurationName(),
     configuration: await eda.pcb_Drc.getCurrentRuleConfiguration(),
-  };
+  } : null;
   const layers = await eda.pcb_Layer.getAllLayers();
   const netNames = await eda.pcb_Net.getAllNetsName();
   const components = await eda.pcb_PrimitiveComponent.getAll();
@@ -817,10 +852,29 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
     ...lineData.map((line) => ({ ...line, segmentKind: "line" })),
     ...arcData.map((arc) => ({ ...arc, segmentKind: "arc" })),
   ];
+  const polylineData = [];
   for (const polyline of polylines) {
     const net = value(polyline, "getState_Net", "net") || "";
     const polygon = value(polyline, "getState_Polygon", "polygon");
     const points = polygonPoints(polygon);
+    const first = points[0];
+    const last = points[points.length - 1];
+    const closed = Boolean(
+      points.length >= 4 &&
+      Number.isFinite(first?.x) &&
+      Number.isFinite(first?.y) &&
+      first.x === last?.x &&
+      first.y === last?.y
+    );
+    polylineData.push({
+      primitiveId: value(polyline, "getState_PrimitiveId", "primitiveId"),
+      net,
+      layer: value(polyline, "getState_Layer", "layer"),
+      lineWidth: value(polyline, "getState_LineWidth", "lineWidth"),
+      locked: Boolean(value(polyline, "getState_PrimitiveLock", "primitiveLock")),
+      closed,
+      points: points.map((point) => [point.x, point.y]),
+    });
     for (let index = 1; index < points.length; index += 1) {
       const start = points[index - 1];
       const end = points[index];
@@ -946,7 +1000,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       });
     }
   }
-  const drcSamples = [
+  const drcSamples = includeDrc ? [
     {
       id: "silent-1",
       strict: true,
@@ -968,12 +1022,12 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
       includeVerboseError: true,
       result: await eda.pcb_Drc.check(true, true, true),
     },
-  ];
-  const drcRuleAfter = {
+  ] : [];
+  const drcRuleAfter = includeDrc ? {
     name: await eda.pcb_Drc.getCurrentRuleConfigurationName(),
     configuration: await eda.pcb_Drc.getCurrentRuleConfiguration(),
-  };
-  const drc = drcSamples[drcSamples.length - 1].result;
+  } : null;
+  const drc = includeDrc ? drcSamples[drcSamples.length - 1].result : null;
   return {
     ...base,
     kind: "pcb",
@@ -991,6 +1045,7 @@ if (documentInfo.documentType === ${DOCUMENT_TYPE.PCB}) {
     netNames,
     lines: lineData,
     arcs: arcData,
+    polylines: polylineData,
     segments,
     vias: viaData,
     viaCount: viaData.length,
@@ -2430,6 +2485,36 @@ function analyzeSchematic(raw, source, options = {}) {
   warnings.push(...presentation.observations);
   warnings.push(...symbolPlacement.observations);
 
+  const coverage = {
+    requiredAxes: [
+      "schematicDrc",
+      "identityAndFootprints",
+      "componentSelection",
+      "presentationGeometry",
+      "symbolPlacement",
+      "gateSequence",
+    ],
+    checkedAxes: [
+      "schematicDrc",
+      "identityAndFootprints",
+      "componentSelection",
+      "presentationGeometry",
+      "symbolPlacement",
+      "gateSequence",
+    ],
+    unverifiedAxes: [
+      ...(!componentSelectionEvidence.cleared ? ["componentSelection"] : []),
+      ...(!presentation.available || presentation.requiresVisualReview
+        ? ["presentationGeometry"]
+        : []),
+      ...(symbolPlacement.unresolved.length || symbolPlacement.requiresVisualReview
+        ? ["symbolPlacement"]
+        : []),
+      ...(!gateLedgerClearanceResult.cleared ? ["gateSequence"] : []),
+    ],
+    notApplicable: [],
+  };
+
   return {
     schemaVersion: 5,
     evidence: "RULE_CHECK",
@@ -2460,6 +2545,7 @@ function analyzeSchematic(raw, source, options = {}) {
       symbolPlacement,
       gateLedgerClearance: gateLedgerClearanceResult,
     },
+    coverage,
     failures,
     unverified,
     warnings,
@@ -2740,6 +2826,49 @@ function analyzePcb(raw, options, source) {
   else if (unverified.length) decision = DECISIONS.UNVERIFIED;
   else decision = DECISIONS.PASS_WITH_EXCEPTIONS;
 
+  const coverage = {
+    requiredAxes: [
+      "detailedDrc",
+      "routingGeometry",
+      "routingTopology",
+      "copperConnectivity",
+      "boardMechanicalContainment",
+      "placementClosure",
+      "gateSequence",
+      "specializedTechnology",
+    ],
+    checkedAxes: [
+      "detailedDrc",
+      "routingGeometry",
+      "routingTopology",
+      "copperConnectivity",
+      "boardMechanicalContainment",
+      "placementClosure",
+      "gateSequence",
+      "specializedTechnology",
+    ],
+    unverifiedAxes: [
+      ...(!drc.evidenceVerified ? ["detailedDrc"] : []),
+      ...(partialTopologyNets.length ? ["routingTopology"] : []),
+      ...(!placementClearance.cleared
+        ? ["boardMechanicalContainment", "placementClosure"]
+        : []),
+      ...(!gateLedgerClearanceResult.cleared ? ["gateSequence"] : []),
+      ...(hintedCrystalNets.length && !crystalClearance.cleared
+        ? ["specializedTechnology"]
+        : []),
+      ...(hintedHighSpeedNets.length && !highSpeedClearance.cleared
+        ? ["specializedTechnology"]
+        : []),
+    ],
+    notApplicable: [
+      ...(!hintedCrystalNets.length && !hintedHighSpeedNets.length
+        ? ["specializedTechnology"]
+        : []),
+      ...(!manufacturing.reviewed ? ["manufacturingOutputs"] : []),
+    ],
+  };
+
   return {
     schemaVersion: 9,
     evidence: "RULE_CHECK",
@@ -2810,10 +2939,11 @@ function analyzePcb(raw, options, source) {
         candidateLayerIds: [...outlineLayerIds],
       },
     },
+    coverage,
     failures,
     warnings,
     limitations: [
-      "The audit does not prove that the board outline is one closed, non-self-intersecting contour.",
+      "Native outline topology and material containment are accepted only through the bound schema-3 placement audit; the baseline collector alone does not prove them.",
       ...routingTopology.limitations,
       ...sharpRightAngleCorners.limitations,
       "Unrouted connections and netlist equivalence must be confirmed in EasyEDA.",

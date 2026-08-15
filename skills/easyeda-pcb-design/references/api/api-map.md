@@ -343,6 +343,22 @@ gate before further routing.
 - `PCB_Drc` and `PCB_Document`.
 - `PCB_ManufactureData` for manufacturing output only after design validation.
 
+Shared route/repair plans use the documented signatures exactly:
+
+- `pcb_PrimitiveLine.create(net, layer, startX, startY, endX, endY,
+  lineWidth?, primitiveLock?)`;
+- `pcb_PrimitiveVia.create(net, x, y, holeDiameter, diameter, viaType,
+  designRuleBlindViaName?, solderMaskExpansion?, primitiveLock?)`;
+- delete one exact line/via primitive ID per awaited call, even though the API
+  type also accepts arrays;
+- `pcb_Document.save()` must return `true`, followed by switch/reopen readback.
+
+Use `route_transaction.mjs` and `repair_transaction.mjs` to generate these calls
+from validated JSON. Copper layers are enum names (`TOP`, `BOTTOM`, or
+`INNER_1`…`INNER_30`) resolved through `EPCB_LayerId`; via types are `VIA`,
+`BLIND`, or `SUTURE` resolved through `EPCB_PrimitiveViaType`. Do not substitute
+numeric layer guesses or one-off per-attempt scripts.
+
 For manufacturing files, use the exact `PCB_ManufactureData.getGerberFile()`,
 `getBomFile()`, `getPickAndPlaceFile()`, and optional `getPcbInfoFile()` docs.
 Save into a new revision directory with
@@ -357,7 +373,12 @@ PnP and their regression audit remain the required manufacturing package.
 
 PCB coordinates use 1 mil per unit.
 
-For `easyeda_placement_audit.mjs`, collect component designator, MPN,
+For `easyeda_placement_audit.mjs`, also collect every native board-outline
+polyline's primitive ID, layer, lock state, closed state, and ordered points.
+The constraint record must identify the exact outer contour and every cutout;
+unbound or loose outline geometry keeps mechanical containment unresolved.
+
+Collect component designator, MPN,
 footprint, 3D model, layer, position, rotation, and BBox; collect every pad's
 full shape, per-layer `specialPad`, hole, layer, position, rotation, and net; and collect every via's
 outer diameter, drill, type, position, net, and mask expansion. Use

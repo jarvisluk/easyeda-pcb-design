@@ -910,7 +910,7 @@ function runTests() {
   assert.equal(revisionUnverified.decision, "UNVERIFIED");
   assert.deepEqual(revisionUnverified.unregisteredLiveUuids, ["pcb-extra"]);
 
-  assert.equal(DESIGN_FINGERPRINT_SCHEMA_VERSION, 5);
+  assert.equal(DESIGN_FINGERPRINT_SCHEMA_VERSION, 6);
   const rotationFingerprintFixture = pcbFixture();
   rotationFingerprintFixture.components[0].rotation = 0;
   const rotationFingerprintA = designFingerprint(rotationFingerprintFixture);
@@ -927,6 +927,14 @@ function runTests() {
     designFingerprint(specialPadFingerprintFixture),
     specialPadFingerprint,
     "per-layer specialPad geometry must invalidate exact-revision evidence",
+  );
+  const outlineFingerprintFixture = placementFixture();
+  const outlineFingerprint = designFingerprint(outlineFingerprintFixture);
+  outlineFingerprintFixture.polylines[0].points[1][0] += 10;
+  assert.notEqual(
+    designFingerprint(outlineFingerprintFixture),
+    outlineFingerprint,
+    "native board-outline geometry must invalidate exact-revision evidence",
   );
 
   const placementRaw = placementFixture();
@@ -1016,7 +1024,7 @@ function runTests() {
     gateLedger: "<gate-ledger-self-test>",
   };
   const clearPlacementArtifact = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "easyeda-placement-audit",
     status: "PLACEMENT_CLEAR_FOR_ROUTING",
     fabricationRelease: false,
@@ -1031,6 +1039,16 @@ function runTests() {
       consistencyGateStatus: "CLEARED_FOR_PLACEMENT",
     },
     checks: {
+      boardContainment: {
+        outerContour: { primitiveId: "outline-main", locked: true, pointCount: 4 },
+        cutouts: [],
+        padOutsideBoard: [],
+        courtyardOutsideBoard: [],
+        criticalZoneOutsideBoard: [],
+        cutoutIntersections: [],
+        violations: [],
+        unverified: [],
+      },
       viaPad: {
         violations: [],
         unsupportedPads: [],
@@ -1055,6 +1073,26 @@ function runTests() {
       },
       humanInterfaces: { violations: [], unverified: [] },
       interfacesAndBom: { failures: [], unverified: [] },
+    },
+    coverage: {
+      requiredAxes: [
+        "boardMechanicalContainment",
+        "viaPadGeometry",
+        "componentOccupancy",
+        "criticalPlacementZones",
+        "humanInterfaces",
+        "externalInterfacesAndBom",
+      ],
+      checkedAxes: [
+        "boardMechanicalContainment",
+        "viaPadGeometry",
+        "componentOccupancy",
+        "criticalPlacementZones",
+        "humanInterfaces",
+        "externalInterfacesAndBom",
+      ],
+      unverifiedAxes: [],
+      notApplicable: [],
     },
     failures: [],
     unverified: [],
@@ -1135,6 +1173,17 @@ function runTests() {
     { kind: "formal-review-fixture" },
   );
   assert.equal(formalLegacyPlacement.decision, BASELINE_DECISIONS.UNVERIFIED);
+  const formalMissingCoverage = analyzeBaseline(
+    formalRaw,
+    {
+      ...parseBaselineArgs([]),
+      ...formalLedgerOptions,
+      placementAuditRecord: { ...clearPlacementArtifact, coverage: undefined },
+      placementAuditReport: "<placement-self-test-missing-coverage>",
+    },
+    { kind: "formal-review-fixture" },
+  );
+  assert.equal(formalMissingCoverage.decision, BASELINE_DECISIONS.UNVERIFIED);
   const formalConflictingClearPlacement = analyzeBaseline(
     formalRaw,
     {
@@ -1313,6 +1362,8 @@ function runTests() {
   assert.equal(baseline.fabricationRelease, false);
   assert.equal(baseline.manufacturingOutputsReviewed, false);
   assert.equal(baseline.checks.drc.evidenceVerified, true);
+  assert.ok(baseline.coverage.requiredAxes.includes("boardMechanicalContainment"));
+  assert.deepEqual(baseline.coverage.unverifiedAxes, []);
   assert.equal(baseline.checks.drc.ruleBinding.stable, true);
   assert.equal(
     baseline.constraints.drcRuleBinding.fingerprint,
@@ -1447,6 +1498,8 @@ function runTests() {
   );
   assert.equal(schematicWarningsOnly.checks.drc.warningCount, 3);
   assert.equal(schematicWarningsOnly.checks.drc.errorCount, 0);
+  assert.ok(schematicWarningsOnly.coverage.requiredAxes.includes("symbolPlacement"));
+  assert.ok(schematicWarningsOnly.coverage.unverifiedAxes.includes("presentationGeometry"));
 
   const degradedPresentationRaw = schematicFixture();
   degradedPresentationRaw.components = Array.from({ length: 22 }, (_, index) => ({
