@@ -94,17 +94,23 @@ Every live mutation requires:
   separately verified restore path;
 - exact UUID and baseline-fingerprint binding;
 - an append-only schema-2 operation log with transaction/attempt identity,
-  timestamps, outcome, progress, and evidence;
+  start/end timestamps, measured duration, outcome, progress, and evidence;
 - a gate ledger whose integrity is `CLEARED`; `CLEARED` plus `INCOMPLETE` means
   honest work in progress, not closure or failure;
-- a `CONTINUE` result from `easyeda_execution_budget.mjs`; a stop status is
-  refusal evidence and must not be reset through a renamed gate or new PCB;
 - after placement, a current schema-3 placement report with native board
   containment and no unverified required coverage axis;
 - before production routing or destructive repair, a matching native `.epro`
   checkpoint manifest and `NATIVE_RESTORE_MATCH` from a separate probe restore;
 - save/switch/reopen, exact-delta readback, repeated detailed DRC, and gate
   verification after the transaction.
+
+Summarize elapsed time with `easyeda_execution_timing.mjs`. Timing is
+observational telemetry only: duration may trigger a progress notice, but never
+authorizes, blocks, stops, or limits PCB work. Stop only for an applicable
+design, authorization, identity, rollback, readback, DRC, or gate condition.
+When answering a timing question about live work, state both facts explicitly:
+time does not control execution, and the operation log still records start/end
+timestamps plus measured duration for every application and verification step.
 
 Use schema-2 JSON plans with `easyeda_transaction.mjs` for route, repair,
 placement, outline, and copper instead of per-attempt browser scripts. It must stop at

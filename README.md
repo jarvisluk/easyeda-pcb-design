@@ -139,7 +139,7 @@ node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 
 Work may continue only when the command exits with code `0` and reports `ready: true`. Project and document UUIDs are bound before writes. Every operation is awaited, and semantic readback from the saved and reopened design is authoritative.
 
-Production routing and destructive repair additionally require a schema-2 timed operation log, a `CONTINUE` execution-budget result, a schema-3 placement report proving native board-material containment, and a native `.epro` checkpoint proven by a separate probe restore. The [live tools library](skills/easyeda-pcb-design/references/api/tool-library.md) exposes ten stable commands; route, repair, placement, outline, and copper differences are schema-2 JSON plans executed by one shared transaction engine. A gate advances only after saved/reopened current-state, exact-delta/residue checks, post-placement containment, and repeated detailed-DRC verification.
+Production routing and destructive repair additionally require a schema-2 timed operation log, a schema-3 placement report proving native board-material containment, and a native `.epro` checkpoint proven by a separate probe restore. Elapsed time is reported but never controls execution. The [live tools library](skills/easyeda-pcb-design/references/api/tool-library.md) exposes ten stable commands; route, repair, placement, outline, and copper differences are schema-2 JSON plans executed by one shared transaction engine. A gate advances only after saved/reopened current-state, exact-delta/residue checks, post-placement containment, and repeated detailed-DRC verification.
 
 Authorization profile and transaction type are separate routing dimensions:
 

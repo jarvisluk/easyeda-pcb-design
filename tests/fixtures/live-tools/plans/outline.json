@@ -31,7 +31,6 @@
     "requireBaselineRecoveryOnReject": true
   },
   "controls": {
-    "budgetCheck": "evidence/readbacks/budget.json",
     "checkpointCheck": "evidence/readbacks/checkpoint.json",
     "authorizationRecord": "evidence/readbacks/authorization.json",
     "gateLedgerCheck": "evidence/readbacks/gate-ledger.json",

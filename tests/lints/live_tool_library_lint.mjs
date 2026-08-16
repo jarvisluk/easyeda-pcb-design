@@ -24,7 +24,7 @@ const LIVE_ROOT = path.join(REPO_ROOT, "skills/easyeda-pcb-design/scripts/live")
 const FIXTURE_ROOT = path.join(REPO_ROOT, "tests/fixtures/live-tools/plans");
 const EXPECTED_CLIS = Object.freeze([
   "check_companion.mjs",
-  "easyeda_execution_budget.mjs",
+  "easyeda_execution_timing.mjs",
   "easyeda_gate_ledger.mjs",
   "easyeda_identity_preflight.mjs",
   "easyeda_native_checkpoint.mjs",

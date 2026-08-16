@@ -1,0 +1,37 @@
+{
+  "id": "long-running-pcb-continuation",
+  "why": "Guards the user-selected timing policy: elapsed time is recorded and reported but never acts as a live-write authorization or refusal gate. It also verifies that removing the execution-budget gate does not weaken the independent identity, rollback, placement, readback, DRC, and gate-ledger controls.",
+  "request": "continue my current partially routed EasyEDA PCB. The saved records say the schematic handoff, placement/board containment, production authorization, and separate-probe native restore check are current. The operation log shows 30 hours total and no gate closure for the last 10 hours. Should elapsed time itself block the next bounded routing transaction? Do not modify anything yet; just classify the task and tell me the next action.",
+  "readOnly": true,
+  "expect": {
+    "entryState": "unfinished PCB",
+    "enterAtPhase": 7,
+    "scopeLastPhase": 10,
+    "mode": "build or modify",
+    "tierAnyOf": ["baseline"],
+    "mustLoad": [
+      "references/workflows/entry-routing.md",
+      "references/workflows/pcb-workflow.md",
+      "references/workflows/live-build-gates.md",
+      "references/api/tool-library.md",
+      "references/layout/layout-rules.md"
+    ],
+    "mustNotLoad": [
+      "references/api/manufacturing-output.md",
+      "references/high-speed/high-speed-workflow.md"
+    ],
+    "mustState": [
+      "elapsed time and lack of recent gate progress are observational telemetry and do not by themselves block or authorize the next transaction",
+      "the saved claims must still be checked against the live project, PCB UUID, baseline fingerprint, checkpoint, placement, authorization, and gate ledger before writing",
+      "the schema-2 operation log continues to record start/end timestamps and measured duration for each application and verification step",
+      "the next action is read-only live-state and evidence binding, not resetting a timer or immediately writing the board"
+    ],
+    "mustNotState": [
+      "a CONTINUE execution-budget result is required",
+      "30 hours or 10 hours without a gate closure automatically stops the task",
+      "the stated records can be trusted without live exact-revision inspection",
+      "any fabrication or order-readiness conclusion"
+    ]
+  },
+  "notes": "The request deliberately states that other records are current, but entry state still comes from live inspection. Timing must remain non-controlling while all non-time safety and evidence gates stay intact."
+}

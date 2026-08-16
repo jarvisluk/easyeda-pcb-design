@@ -16,7 +16,6 @@ const VIA_TYPES = new Set(["VIA", "BLIND", "SUTURE"]);
 const TARGET_CLASSES = new Set(["NON_PRODUCTION_PROBE", "PRODUCTION"]);
 const ROLLBACK_STRATEGIES = new Set(["DELETE_CREATED_IDS", "RESTORE_CHECKPOINT"]);
 const REQUIRED_CONTROLS = Object.freeze([
-  "budgetCheck",
   "checkpointCheck",
   "authorizationRecord",
   "gateLedgerCheck",

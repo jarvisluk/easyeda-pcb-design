@@ -99,7 +99,7 @@ node skills/easyeda-pcb-design/scripts/live/easyeda_identity_preflight.mjs --sel
 node skills/easyeda-pcb-design/scripts/live/easyeda_revision_guard.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_repair_snapshot.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_gate_ledger.mjs --self-test
-node skills/easyeda-pcb-design/scripts/live/easyeda_execution_budget.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_execution_timing.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_native_checkpoint.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/inspect_current_state.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_transaction.mjs --self-test

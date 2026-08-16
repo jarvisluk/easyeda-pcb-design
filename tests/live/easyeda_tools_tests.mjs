@@ -71,9 +71,6 @@ function main() {
     const planPath = path.join(root, "plans/routes/route.json");
     const resolveControl = (field) => path.join(root, plan.controls[field]);
     writeJson(planPath, plan);
-    writeJson(resolveControl("budgetCheck"), {
-      kind: "easyeda-execution-budget-check", status: "CONTINUE", executeAllowed: true,
-    });
     writeJson(resolveControl("checkpointCheck"), {
       kind: "easyeda-native-checkpoint-check", status: "NATIVE_CHECKPOINT_MATCH",
       executeAllowed: true, liveFingerprint: plan.baselineFingerprint,

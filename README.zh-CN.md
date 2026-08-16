@@ -139,7 +139,7 @@ node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 
 只有退出码为 `0` 且结果包含 `ready: true` 才能继续。写入前绑定工程和文档 UUID；每个操作都要等待完成，并以保存、重新打开后的语义回读为准。
 
-生产布线与破坏性修复还必须具备 schema-2 带时间戳操作日志、状态为 `CONTINUE` 的执行预算检查、证明原生板材边界包含关系的 schema-3 布局报告，以及通过独立探针恢复验证的原生 `.epro` 检查点。[实时 tools 库](skills/easyeda-pcb-design/references/api/tool-library.md)只暴露 10 个稳定命令；布线、修复、布局、板框和铜皮差异都写成 schema-2 JSON，由同一个事务引擎执行。只有保存重开后的当前状态、精确 delta/residue、更新后的 containment 和重复详细 DRC 均验证通过，才能推进 gate。
+生产布线与破坏性修复还必须具备 schema-2 带时间戳操作日志、证明原生板材边界包含关系的 schema-3 布局报告，以及通过独立探针恢复验证的原生 `.epro` 检查点。耗时只记录和汇总，不控制是否继续执行。[实时 tools 库](skills/easyeda-pcb-design/references/api/tool-library.md)只暴露 10 个稳定命令；布线、修复、布局、板框和铜皮差异都写成 schema-2 JSON，由同一个事务引擎执行。只有保存重开后的当前状态、精确 delta/residue、更新后的 containment 和重复详细 DRC 均验证通过，才能推进 gate。
 
 授权档案和 transaction 是两个不同维度：
 

@@ -58,7 +58,7 @@ are libraries, not additional agent entrypoints.
 | `inspect_current_state.mjs` | Capture unified geometry, outline, copper, DRC, and fingerprint state |
 | `easyeda_transaction.mjs` | Validate or execute one data-driven bounded transaction |
 | `verify_gate.mjs` | Verify saved/reopened exact deltas and gate evidence |
-| `easyeda_execution_budget.mjs` | Enforce time, retry, and no-progress ceilings |
+| `easyeda_execution_timing.mjs` | Summarize step, attempt, gate, and total elapsed time without controlling execution |
 | `easyeda_gate_ledger.mjs` | Enforce gate order, evidence, telemetry, and completion |
 
 Do not add another top-level live command for a different net, placement pass,
@@ -129,7 +129,6 @@ profile: `route`, `repair`, `placement`, `outline`, or `copper`.
     "requireBaselineRecoveryOnReject": true
   },
   "controls": {
-    "budgetCheck": "evidence/readbacks/execution-budget-check.json",
     "checkpointCheck": "evidence/readbacks/pre-route-restore-check.json",
     "authorizationRecord": "evidence/readbacks/route-authorization.json",
     "gateLedgerCheck": "evidence/readbacks/gate-ledger-check.json",
@@ -170,7 +169,6 @@ that report from clearing. They still require a clear post-placement report.
 
 Every plan binds:
 
-- a `CONTINUE` execution-budget check;
 - a matching native checkpoint check, and `NATIVE_RESTORE_MATCH` for a
   production target;
 - an authorization record with the same transaction ID, target class, and mode;
@@ -178,6 +176,11 @@ Every plan binds:
 - schema-2 append-only operation telemetry;
 - a clear pre-placement report for route, ordinary repair, and copper;
 - a new post-placement report bound to the saved/reopened after fingerprint.
+
+Every application and verification appends start/end timestamps and measured
+duration to the operation log. Run `easyeda_execution_timing.mjs` whenever a
+human-readable timing summary is needed. Its report has
+`controlsExecution: false`; no elapsed duration is a transaction control.
 
 Use `DELETE_CREATED_IDS` only for create-only transactions whose returned IDs
 can be removed without touching prior geometry. Any deletion or modification

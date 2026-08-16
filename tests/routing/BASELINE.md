@@ -17,6 +17,7 @@ Then compare the reply against the expectations the script prints.
 
 - How to read a result
 - antenna-module-selection
+- long-running-pcb-continuation
 - pcie-drc-order-readiness
 - What these cases do not cover
 
@@ -33,7 +34,7 @@ standing to infer layout conclusions it has no basis for.
 
 ## antenna-module-selection
 
-Baseline: PASS, rerun 2026-08-15 against the repository skill revision.
+Baseline: PASS, rerun 2026-08-16 against the repository skill revision.
 
 The reply classified no design, phase 1, guide, bounded scope to phase 2, and
 loaded `entry-routing.md`, `component-selection-evidence.md`,
@@ -56,9 +57,28 @@ Two behaviors worth preserving beyond the recorded expectations:
   numbered-pad-to-board-edge orientation closure before later placement, while
   making no fabrication/order conclusion for ordinary guidance.
 
+## long-running-pcb-continuation
+
+Baseline: PASS, recorded 2026-08-16 against the repository skill revision.
+
+The fresh-context reply treated the task as an unfinished-PCB continuation,
+bounded it to PCB-only build/modify work through `DESIGN_CLOSURE`, preserved
+existing committed geometry, and chose a provisional baseline tier subject to
+promotion from the bound constraints. It loaded the live gates, tool library,
+PCB workflow, constraint, placement, and layout references while excluding
+manufacturing and untriggered specializations.
+
+Most importantly, it stated both halves of the timing contract without seeing
+the expectations: 30 hours total and 10 hours without a gate closure do not by
+themselves block or authorize a transaction, while every application and
+verification step still records start/end timestamps and measured duration. It
+kept identity, authorization, rollback, saved readback, DRC, placement, and gate
+evidence as independent blockers and chose read-only exact-revision preflight as
+the next action instead of resetting a timer or writing immediately.
+
 ## pcie-drc-order-readiness
 
-Baseline: PASS, rerun 2026-08-15 against the repository skill revision.
+Baseline: PASS, rerun 2026-08-16 against the repository skill revision.
 
 The reply reached `UNVERIFIED FOR FABRICATION` and held every part of the safety
 boundary this case exists to protect:
@@ -89,10 +109,11 @@ item, so it is not encoded as an expectation.
 
 ## What these cases do not cover
 
-Both are read-only guidance and review probes. They do not exercise the live
-build gates, the ledger, snapshot and readback behavior, or any write path. A
-change to `live-build-gates.md` or to gate semantics still needs its own live
-forward test.
+All three cases are read-only routing probes. The continuation case exercises
+selection and explanation of the live gate contract, but none executes the
+ledger, snapshot, readback, or any write path. A change to live implementation
+semantics still needs deterministic integration coverage or a non-production
+probe.
 
 The antenna case is the only automated coverage of the `ORIENTATION_VIOLATION`,
 `ORIENTATION_CLEARED`, and `NOT_SUPPLIED` prose-only gates, and it proves only

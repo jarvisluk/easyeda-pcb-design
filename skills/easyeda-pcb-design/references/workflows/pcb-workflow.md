@@ -163,8 +163,8 @@ and reopens this gate.
 
 ## Route the board
 
-Before full routing in new construction, require current placement closure, a
-`CONTINUE` execution-budget check, and a matching native `.epro` checkpoint;
+Before full routing in new construction, require current placement closure and
+a matching native `.epro` checkpoint;
 then pass the routing canary in
 [live-build-gates.md](live-build-gates.md). In PCB continuation, use the first
 new route in each unproven class as a canary while preserving existing geometry.

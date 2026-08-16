@@ -83,8 +83,7 @@ async function loadControlRecords(plan, artifactRoot) {
     resolveContainedPath(artifactRoot, plan.controls[field], label),
     label,
   );
-  const [budget, checkpoint, authorization, ledger, operationLog, prePlacement] = await Promise.all([
-    load("budgetCheck", "budget check"),
+  const [checkpoint, authorization, ledger, operationLog, prePlacement] = await Promise.all([
     load("checkpointCheck", "checkpoint check"),
     load("authorizationRecord", "authorization record"),
     load("gateLedgerCheck", "gate ledger check"),
@@ -93,7 +92,7 @@ async function loadControlRecords(plan, artifactRoot) {
       ? load("prePlacementReport", "pre-transaction placement report")
       : Promise.resolve(null),
   ]);
-  return analyzeControlRecords(plan, { budget, checkpoint, authorization, ledger, operationLog, prePlacement });
+  return analyzeControlRecords(plan, { checkpoint, authorization, ledger, operationLog, prePlacement });
 }
 
 function placementIsCurrentAndClear(placement, fingerprint) {
@@ -110,11 +109,8 @@ function placementIsCurrentAndClear(placement, fingerprint) {
 }
 
 function analyzeControlRecords(plan, records) {
-  const { budget, checkpoint, authorization, ledger, operationLog, prePlacement } = records;
+  const { checkpoint, authorization, ledger, operationLog, prePlacement } = records;
   const reasons = [];
-  if (budget?.kind !== "easyeda-execution-budget-check" || budget?.status !== "CONTINUE" || budget?.executeAllowed !== true) {
-    reasons.push("execution budget does not permit another transaction");
-  }
   const checkpointMatches = Boolean(
     checkpoint?.executeAllowed === true &&
       checkpoint?.liveFingerprint === plan.baselineFingerprint &&
@@ -241,7 +237,6 @@ function planFixture(mode = "route") {
       requireBaselineRecoveryOnReject: true,
     },
     controls: {
-      budgetCheck: "evidence/readbacks/budget.json",
       checkpointCheck: "evidence/readbacks/checkpoint.json",
       authorizationRecord: "evidence/readbacks/authorization.json",
       gateLedgerCheck: "evidence/readbacks/gate-ledger-check.json",
@@ -255,7 +250,6 @@ function planFixture(mode = "route") {
 function controlFixture(plan) {
   const fingerprint = plan.baselineFingerprint;
   return {
-    budget: { kind: "easyeda-execution-budget-check", status: "CONTINUE", executeAllowed: true },
     checkpoint: { kind: "easyeda-native-checkpoint-check", status: "NATIVE_CHECKPOINT_MATCH", executeAllowed: true, liveFingerprint: fingerprint },
     authorization: {
       kind: "easyeda-operation-authorization", schemaVersion: 1, authorized: true,

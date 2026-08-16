@@ -127,7 +127,7 @@ function postPlacementClear(placement, fingerprint) {
 }
 
 function analyzeGateVerification(input) {
-  const { plan: inputPlan, before, after, transactionResult, budget, checkpoint, ledger, postPlacement } = input;
+  const { plan: inputPlan, before, after, transactionResult, checkpoint, ledger, postPlacement } = input;
   const validation = validateTransactionPlan(inputPlan);
   const plan = validation.plan;
   const failures = [];
@@ -146,9 +146,6 @@ function analyzeGateVerification(input) {
     transactionResult?.status !== "TRANSACTION_APPLIED_PENDING_REOPEN" ||
     transactionResult?.plan?.transactionId !== plan?.transactionId || transactionResult?.plan?.mode !== plan?.mode
   ) failures.push("transaction application result is absent or bound to another plan/mode");
-  if (budget?.kind !== "easyeda-execution-budget-check" || budget?.status !== "CONTINUE" || budget?.executeAllowed !== true) {
-    failures.push("pre-transaction budget check did not permit execution");
-  }
   const checkpointMatches = Boolean(
     checkpoint?.executeAllowed === true && checkpoint?.liveFingerprint === plan?.baselineFingerprint &&
       ((checkpoint?.kind === "easyeda-native-checkpoint-check" && checkpoint?.status === "NATIVE_CHECKPOINT_MATCH") ||
@@ -305,7 +302,6 @@ function selfTest() {
     };
     const input = {
       plan, before: before.state, after: after.state, transactionResult,
-      budget: { kind: "easyeda-execution-budget-check", status: "CONTINUE", executeAllowed: true },
       checkpoint: { kind: "easyeda-native-checkpoint-check", status: "NATIVE_CHECKPOINT_MATCH", executeAllowed: true, liveFingerprint: plan.baselineFingerprint },
       ledger: { kind: "easyeda-gate-ledger", decision: "CLEARED" },
       postPlacement: {
@@ -328,6 +324,7 @@ async function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return selfTest();
+    const verificationStartedAt = new Date();
     const planPath = path.resolve(options.plan);
     const inputPlan = await readJsonFile(planPath, "plan");
     const validation = validateTransactionPlan(inputPlan);
@@ -335,17 +332,16 @@ async function main() {
     const plan = validation.plan;
     const artifactRoot = resolveArtifactRoot(planPath, plan.artifactRoot);
     const loadControl = (field, label) => readJsonFile(resolveContainedPath(artifactRoot, plan.controls[field], label), label);
-    const [before, after, transactionResult, budget, checkpoint, ledger, postPlacement, operationLog] = await Promise.all([
+    const [before, after, transactionResult, checkpoint, ledger, postPlacement, operationLog] = await Promise.all([
       readJsonFile(resolveContainedPath(artifactRoot, options.before, "before state"), "before state"),
       readJsonFile(resolveContainedPath(artifactRoot, options.after, "after state"), "after state"),
       readJsonFile(resolveContainedPath(artifactRoot, options.transactionResult, "transaction result"), "transaction result"),
-      loadControl("budgetCheck", "budget check"),
       loadControl("checkpointCheck", "checkpoint check"),
       loadControl("gateLedgerCheck", "gate ledger check"),
       loadControl("postPlacementReport", "post-transaction placement report"),
       loadControl("operationLog", "operation log"),
     ]);
-    const result = analyzeGateVerification({ plan, before, after, transactionResult, budget, checkpoint, ledger, postPlacement });
+    const result = analyzeGateVerification({ plan, before, after, transactionResult, checkpoint, ledger, postPlacement });
     const output = await writeContainedJson(artifactRoot, options.output, result);
     const verifiedAt = new Date();
     await appendOperationEntry(
@@ -360,7 +356,9 @@ async function main() {
         operation: `${result.mode} transaction saved/reopened gate verification`,
         outcome: "READ_ONLY",
         semanticReadback: `${result.status}: ${result.failures.length} failure(s), ${result.unverified.length} unverified finding(s)`,
-        startedAt: verifiedAt.toISOString(), endedAt: verifiedAt.toISOString(), durationMs: 0,
+        startedAt: verificationStartedAt.toISOString(),
+        endedAt: verifiedAt.toISOString(),
+        durationMs: verifiedAt.getTime() - verificationStartedAt.getTime(),
         attemptDisposition: result.status === "TRANSACTION_VERIFIED" ? "ACCEPTED" : result.status === "TRANSACTION_REJECTED" ? "REJECTED" : "UNKNOWN",
         gateProgress: result.status === "TRANSACTION_VERIFIED" ? "CLOSED" : result.status === "TRANSACTION_REJECTED" ? "BLOCKED" : "NO_CHANGE",
         evidence: [output],
