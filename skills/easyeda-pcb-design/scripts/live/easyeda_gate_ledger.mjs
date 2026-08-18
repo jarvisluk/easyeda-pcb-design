@@ -26,8 +26,13 @@ import {
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
 } from "../lib/audit_common.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { resolveOperationLogPath } from "./lib/tool_runtime.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, BLOCKED: 2, UNVERIFIED: 3 });
+const CLI_STARTED_AT = new Date();
+const DEFAULT_LEDGER = "evidence/readbacks/gate-ledger.json";
+const DEFAULT_OUTPUT = "evidence/readbacks/gate-ledger-check.json";
 
 // Canonical sequences copied from live-build-gates.md. That reference remains
 // the authority for their meaning; keep this table in sync with it.
@@ -37,6 +42,7 @@ const BRANCH_GATES = Object.freeze({
     "PROJECT_BOUND",
     "PRIMARY_FUNCTIONS_CONFIRMED",
     "SCHEMATIC_IDENTITY_STABLE",
+    "SCHEMATIC_DRC_CLEAR",
     "SCHEMATIC_VERIFIED",
     "PCB_SYNC_MATCH",
     "ROUTING_CANARY_CLEAR",
@@ -58,6 +64,7 @@ const BRANCH_GATES = Object.freeze({
   "existing-board-continuation": Object.freeze([
     "COMPANION_READY",
     "ACTIVE_PCB_AND_HANDOFF_BOUND",
+    "SCHEMATIC_DRC_CLEAR",
     "PCB_SYNC_MATCH",
     "EXISTING_STATE_BASELINED",
     "FIRST_INCOMPLETE_GATE_IDENTIFIED",
@@ -82,6 +89,7 @@ const BRANCH_GATES = Object.freeze({
     "COMPANION_READY",
     "ACTIVE_REVISION_BOUND",
     "REVIEW_SCOPE_BOUND",
+    "SCHEMATIC_DRC_CLEAR",
     "EVIDENCE_INVENTORY_COMPLETE",
   ]),
 });
@@ -446,12 +454,13 @@ function renderMarkdown(report) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/live/easyeda_gate_ledger.mjs --ledger FILE [options]",
+    "  node scripts/live/easyeda_gate_ledger.mjs [options]",
     "",
     "Options:",
-    "  --ledger FILE          Gate ledger JSON for the current transaction",
+    "  --ledger FILE          Override evidence/readbacks/gate-ledger.json",
     "  --require-gate GATE    Require this gate to be CLOSED (repeatable)",
-    "  --output FILE          Relative JSON output path under cwd",
+    "  --output FILE          Override evidence/readbacks/gate-ledger-check.json",
+    "  --operation-log FILE   Override the log path derived from --output/ledger",
     "  --markdown FILE        Relative Markdown status path under cwd",
     "  --force                Overwrite an existing output file",
     "  --self-test            Run deterministic offline tests",
@@ -492,9 +501,10 @@ function requiredValue(argv, index, option) {
 
 function parseArgs(argv) {
   const options = {
-    ledger: undefined,
+    ledger: DEFAULT_LEDGER,
     requireGates: [],
-    output: undefined,
+    output: DEFAULT_OUTPUT,
+    operationLog: undefined,
     markdown: undefined,
     force: false,
     selfTest: false,
@@ -511,6 +521,9 @@ function parseArgs(argv) {
     } else if (option === "--output") {
       options.output = requiredValue(argv, index, option);
       index += 1;
+    } else if (option === "--operation-log") {
+      options.operationLog = requiredValue(argv, index, option);
+      index += 1;
     } else if (option === "--markdown") {
       options.markdown = requiredValue(argv, index, option);
       index += 1;
@@ -523,9 +536,6 @@ function parseArgs(argv) {
     } else {
       throw new Error("unknown option: " + option);
     }
-  }
-  if (!options.help && !options.selfTest && !nonemptyString(options.ledger)) {
-    throw new Error("--ledger is required");
   }
   options.requireGates = [
     ...new Set(options.requireGates.filter(nonemptyString)),
@@ -587,6 +597,9 @@ function analyzeOperationLog(log, options = {}) {
     if (!nonemptyString(entry.operation)) {
       issues.push(prefix + ".operation is required");
     }
+    if (entry.recordedBy !== "TOOL" || !nonemptyString(entry.tool)) {
+      issues.push(prefix + ".recordedBy must be TOOL and .tool must identify the emitting command");
+    }
     for (const field of ["transactionId", "gate", "attemptFamily"]) {
       if (!nonemptyString(entry[field])) issues.push(prefix + "." + field + " is required");
     }
@@ -627,19 +640,10 @@ function analyzeOperationLog(log, options = {}) {
         prefix + ".outcome must be one of " + OPERATION_OUTCOMES.join(", "),
       );
     }
-    if (
-      entry.outcome === "UNKNOWN_TIMEOUT" &&
-      !nonemptyString(entry.semanticReadback)
-    ) {
-      issues.push(
-        prefix +
-          " records a bridge timeout with no semanticReadback; a timed-out write leaves an unknown state and must be resolved by net/layer/geometry/designator readback before any retry",
-      );
-    } else if (
-      entry.outcome !== "READ_ONLY" &&
-      !nonemptyString(entry.semanticReadback)
-    ) {
-      issues.push(prefix + ".semanticReadback is required for a write attempt");
+    if (!nonemptyString(entry.semanticReadback)) {
+      issues.push(entry.outcome === "UNKNOWN_TIMEOUT"
+        ? prefix + " records a bridge timeout with no semanticReadback; a timed-out write leaves an unknown state and must be resolved by net/layer/geometry/designator readback before any retry"
+        : prefix + ".semanticReadback is required for every tool invocation");
     }
   }
   if (issues.length) {
@@ -809,6 +813,17 @@ function analyzeLedger(ledger, options = {}) {
   const closedGates = gates
     .filter((gate) => gate.closed)
     .map((gate) => gate.gate);
+
+  // Schematic DRC is never inapplicable on a branch that owns it. In
+  // particular, schematic-only review cannot bypass it merely because no PCB
+  // handoff will follow.
+  const schematicDrcGate = byGate.get("SCHEMATIC_DRC_CLEAR");
+  if (schematicDrcGate?.state === "NOT_APPLICABLE") {
+    blocked.push(
+      "SCHEMATIC_DRC_CLEAR is required by branch " + branch +
+        " and cannot be NOT_APPLICABLE at scope " + scope,
+    );
+  }
 
   // A CLOSED gate with no existing artifact is the failure mode this lint exists
   // to catch: prose claiming a gate that no evidence supports.
@@ -987,6 +1002,8 @@ function selfTestOperationLog(overrides = {}) {
         gateProgress: "CLOSED",
         evidence: ["binding.json"],
         semanticReadback: "reopened page; U1 present with stable unique id",
+        recordedBy: "TOOL",
+        tool: "self-test-tool.mjs",
       },
     ],
     ...overrides,
@@ -1078,6 +1095,7 @@ async function runSelfTest() {
           { gate: "PROJECT_BOUND", state: "CLOSED", evidence: ["binding.json"] },
           { gate: "PRIMARY_FUNCTIONS_CONFIRMED", state: "CLOSED", evidence: ["primary.json"] },
           { gate: "SCHEMATIC_IDENTITY_STABLE", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "SCHEMATIC_DRC_CLEAR", state: "CLOSED", evidence: ["primary.json"] },
           { gate: "SCHEMATIC_VERIFIED", state: "CLOSED", evidence: ["primary.json"] },
           { gate: "PCB_SYNC_MATCH", state: "CLOSED", evidence: ["primary.json"] },
         ],
@@ -1088,6 +1106,61 @@ async function runSelfTest() {
       throw new Error("schematic-only scope was allowed to close a PCB gate");
     }
 
+    // PCB synchronization may not jump past the schematic DRC gate.
+    const skippedSchematicDrc = analyzeLedger(
+      selfTestLedger({
+        scope: "end-to-end",
+        gates: [
+          { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+          { gate: "PROJECT_BOUND", state: "CLOSED", evidence: ["binding.json"] },
+          { gate: "PRIMARY_FUNCTIONS_CONFIRMED", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "SCHEMATIC_IDENTITY_STABLE", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "SCHEMATIC_DRC_CLEAR", state: "OPEN" },
+          { gate: "SCHEMATIC_VERIFIED", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "PCB_SYNC_MATCH", state: "CLOSED", evidence: ["primary.json"] },
+        ],
+      }),
+      { baseDir: dir, operationLog: log },
+    );
+    if (skippedSchematicDrc.decision !== "BLOCKED") {
+      throw new Error("aggregate schematic verification skipped the schematic DRC gate");
+    }
+
+    const reviewSkippedSchematicDrc = analyzeLedger(
+      selfTestLedger({
+        branch: "read-only-review",
+        scope: "schematic-only",
+        gates: [
+          { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+          { gate: "ACTIVE_REVISION_BOUND", state: "CLOSED", evidence: ["binding.json"] },
+          { gate: "REVIEW_SCOPE_BOUND", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "SCHEMATIC_DRC_CLEAR", state: "OPEN" },
+          { gate: "EVIDENCE_INVENTORY_COMPLETE", state: "CLOSED", evidence: ["primary.json"] },
+        ],
+      }),
+      { baseDir: dir },
+    );
+    if (reviewSkippedSchematicDrc.decision !== "BLOCKED") {
+      throw new Error("schematic review conclusion skipped the schematic DRC gate");
+    }
+    const reviewWaivedSchematicDrc = analyzeLedger(
+      selfTestLedger({
+        branch: "read-only-review",
+        scope: "schematic-only",
+        gates: [
+          { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
+          { gate: "ACTIVE_REVISION_BOUND", state: "CLOSED", evidence: ["binding.json"] },
+          { gate: "REVIEW_SCOPE_BOUND", state: "CLOSED", evidence: ["primary.json"] },
+          { gate: "SCHEMATIC_DRC_CLEAR", state: "NOT_APPLICABLE" },
+          { gate: "EVIDENCE_INVENTORY_COMPLETE", state: "CLOSED", evidence: ["primary.json"] },
+        ],
+      }),
+      { baseDir: dir },
+    );
+    if (reviewWaivedSchematicDrc.decision !== "BLOCKED") {
+      throw new Error("schematic review accepted DRC as not applicable");
+    }
+
     // The verified cache exception is a recognized PCB_SYNC_MATCH substitute.
     const aliasLedger = analyzeLedger(
       selfTestLedger({
@@ -1096,6 +1169,7 @@ async function runSelfTest() {
         gates: [
           { gate: "COMPANION_READY", state: "CLOSED", evidence: ["companion.json"] },
           { gate: "ACTIVE_PCB_AND_HANDOFF_BOUND", state: "CLOSED", evidence: ["binding.json"] },
+          { gate: "SCHEMATIC_DRC_CLEAR", state: "CLOSED", evidence: ["primary.json"] },
           {
             gate: "PCB_SYNC_MATCH",
             state: "PCB_SYNC_VERIFIED_CACHE_EXCEPTION",
@@ -1198,22 +1272,23 @@ async function runSelfTest() {
       throw new Error("operation log accepted inconsistent timestamp duration");
     }
 
-    if (!parseArgs(["--ledger", "l.json"]).ledger) {
+    const requiredArgs = ["--ledger", "l.json", "--output", "check.json"];
+    if (!parseArgs(requiredArgs).ledger) {
       throw new Error("--ledger was not parsed");
     }
+    if (parseArgs(requiredArgs).operationLog !== undefined) {
+      throw new Error("--operation-log was not optional");
+    }
     if (
-      parseArgs(["--ledger", "l.json", "--markdown", "status.md"]).markdown !==
+      parseArgs([...requiredArgs, "--markdown", "status.md"]).markdown !==
       "status.md"
     ) {
       throw new Error("--markdown was not parsed");
     }
-    let rejected = false;
-    try {
-      parseArgs([]);
-    } catch {
-      rejected = true;
+    const defaults = parseArgs([]);
+    if (defaults.ledger !== DEFAULT_LEDGER || defaults.output !== DEFAULT_OUTPUT) {
+      throw new Error("gate-ledger default paths were not selected");
     }
-    if (!rejected) throw new Error("missing --ledger was accepted");
 
     // The renderer exists to stop a readable summary from disagreeing with the
     // verdict, so assert the specific ways a hand-written table goes wrong.
@@ -1293,6 +1368,7 @@ async function readJson(file) {
 }
 
 async function main() {
+  const startedAt = CLI_STARTED_AT;
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(usage());
@@ -1306,13 +1382,19 @@ async function main() {
   const ledgerPath = path.resolve(options.ledger);
   const ledger = await readJson(ledgerPath);
   const baseDir = path.dirname(ledgerPath);
+  const linkedLogPath = nonemptyString(ledger?.operationLog)
+    ? path.resolve(baseDir, ledger.operationLog)
+    : null;
+  const managedLogPath = options.operationLog
+    ? resolveOperationLogPath(options.operationLog, options.output)
+    : linkedLogPath || resolveOperationLogPath(null, options.output);
   let operationLog;
-  if (nonemptyString(ledger?.operationLog)) {
-    const logPath = path.isAbsolute(ledger.operationLog)
-      ? ledger.operationLog
-      : path.resolve(baseDir, ledger.operationLog);
+  if (linkedLogPath) {
+    if (linkedLogPath !== managedLogPath) {
+      throw new Error("--operation-log must name the same file as ledger.operationLog");
+    }
     try {
-      operationLog = await readJson(logPath);
+      operationLog = await readJson(linkedLogPath);
     } catch {
       // An unreadable log stays UNVERIFIED rather than throwing, so the report
       // explains the reason instead of losing the rest of the analysis.
@@ -1336,18 +1418,28 @@ async function main() {
     analysis,
   };
   const text = JSON.stringify(report, null, 2) + "\n";
-  if (options.output) {
-    const outputPath = resolveSafeOutputPath(options.output, {
-      force: options.force,
-    });
-    await writeFile(outputPath, text, "utf8");
-  }
+  const outputPath = resolveSafeOutputPath(options.output, { force: options.force });
+  await writeFile(outputPath, text, "utf8");
+  let markdownPath = null;
   if (options.markdown) {
-    const markdownPath = resolveSafeOutputPath(options.markdown, {
+    markdownPath = resolveSafeOutputPath(options.markdown, {
       force: options.force,
     });
     await writeFile(markdownPath, renderMarkdown(report) + "\n", "utf8");
   }
+  const endedAt = new Date();
+  await appendToolLogEntry(managedLogPath, {
+    tool: "easyeda_gate_ledger.mjs",
+    gate: options.requireGates.at(-1) || "GATE_LEDGER_INTEGRITY",
+    operation: "gate-ledger integrity and completion verification",
+    outcome: "READ_ONLY",
+    semanticReadback: `${analysis.decision}; completion ${analysis.completion}; ${analysis.remainingGates?.length || 0} remaining gate(s)`,
+    startedAt,
+    endedAt,
+    attemptDisposition: analysis.decision === "CLEARED" ? "ACCEPTED" : analysis.decision === "BLOCKED" ? "REJECTED" : "UNKNOWN",
+    gateProgress: analysis.decision === "BLOCKED" ? "BLOCKED" : "NO_CHANGE",
+    evidence: [outputPath, markdownPath].filter(Boolean),
+  });
   process.stdout.write(text);
   process.exitCode =
     analysis.decision === "CLEARED"
@@ -1360,7 +1452,11 @@ async function main() {
 const isMain =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "easyeda_gate_ledger.mjs", gate: "GATE_LEDGER_INTEGRITY", startedAt: CLI_STARTED_AT, error,
+      defaultOutput: DEFAULT_OUTPUT,
+    }).catch(() => {});
     process.stderr.write(
       (error instanceof Error ? error.message : String(error)) + "\n",
     );

@@ -79,6 +79,14 @@ const OPERATION_DEFINITIONS = Object.freeze({
 // "runtime" methods are owned by the shared executor; "dedicated" methods need
 // their own evidence contract; and "refused" methods may not be generalized.
 const API_CAPABILITY_REGISTRY = Object.freeze({
+  "eda.sch_PrimitiveComponent.create": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.component.create" }),
+  "eda.sch_PrimitiveComponent.modify": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.component.modify" }),
+  "eda.sch_PrimitiveComponent.delete": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.component.delete" }),
+  "eda.sch_PrimitiveWire.create": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.wire.create" }),
+  "eda.sch_PrimitiveWire.modify": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.wire.modify" }),
+  "eda.sch_PrimitiveWire.delete": Object.freeze({ disposition: "transaction", registry: "schematic", operation: "schematic.wire.delete" }),
+  "eda.sch_Document.save": Object.freeze({ disposition: "runtime", owner: "schematic_transaction_runner" }),
+  "eda.sch_Drc.check": Object.freeze({ disposition: "runtime", owner: "schematic_state_and_verifier" }),
   "eda.pcb_PrimitiveLine.create": Object.freeze({ disposition: "transaction", operation: "line.create" }),
   "eda.pcb_PrimitiveLine.delete": Object.freeze({ disposition: "transaction", operation: "line.delete" }),
   "eda.pcb_PrimitiveVia.create": Object.freeze({ disposition: "transaction", operation: "via.create" }),

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "kind": "easyeda-schematic-transaction-plan",
+  "mode": "new-construction",
+  "transactionId": "schematic-new-fixture",
+  "gate": "SCHEMATIC_IDENTITY_STABLE",
+  "attemptFamily": "schematic-new",
+  "attemptIndex": 1,
+  "targetClass": "NON_PRODUCTION_PROBE",
+  "projectUuid": "project-1",
+  "schematicUuid": "schematic-1",
+  "schematicPageUuid": "page-1",
+  "baselineFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifactRoot": ".",
+  "operations": [
+    {
+      "operationId": "component-create-u1",
+      "type": "schematic.component.create",
+      "libraryUuid": "library-1",
+      "uuid": "device-1",
+      "x": 100,
+      "y": 100,
+      "rotation": 0,
+      "mirror": false,
+      "addIntoBom": true,
+      "addIntoPcb": true,
+      "identity": {
+        "designator": "U1",
+        "uniqueId": "U1-STABLE",
+        "name": "MCU",
+        "manufacturer": "Vendor",
+        "manufacturerId": "PART-1"
+      }
+    },
+    {
+      "operationId": "wire-create-gnd",
+      "type": "schematic.wire.create",
+      "line": [100, 100, 100, 120],
+      "net": "GND",
+      "lineTypeEnum": "SOLID"
+    }
+  ],
+  "rollback": { "strategy": "DELETE_CREATED_IDS" },
+  "acceptance": {
+    "expectedDeltas": { "components": 1, "wires": 1, "annotations": 0 },
+    "requireSavedReopen": true,
+    "requireStableErc": true,
+    "requireNoNewErc": true,
+    "requireUntouchedIdentity": true,
+    "pinNetAssertions": [
+      { "uniqueId": "U1-STABLE", "pinNumber": "1", "net": "GND" }
+    ]
+  },
+  "controls": {
+    "authorizationRecord": "evidence/readbacks/authorization.json",
+    "gateLedgerCheck": "evidence/readbacks/gate-ledger-check.json",
+    "preEditState": "evidence/readbacks/before.json",
+    "operationLog": "evidence/readbacks/operation-log.json"
+  }
+}

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -9,22 +8,27 @@ import {
   resolveSafeOutputPath,
 } from "../lib/audit_common.mjs";
 import { analyzeOperationLog } from "./easyeda_gate_ledger.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { resolveOperationLogPath } from "./lib/tool_runtime.mjs";
+
+const DEFAULT_OUTPUT = "evidence/readbacks/execution-timing.json";
 
 function usage() {
   return `Usage:
-  node scripts/live/easyeda_execution_timing.mjs --operation-log FILE --output FILE \\
+  node scripts/live/easyeda_execution_timing.mjs [--output FILE] [--operation-log FILE] \\
     [--task-started-at ISO_TIMESTAMP] [--evaluated-at ISO_TIMESTAMP]
   node scripts/live/easyeda_execution_timing.mjs --self-test
 
 The reporter is read-only. It records and summarizes elapsed time but never
-authorizes, blocks, stops, or limits PCB work. Input errors exit 1.
+authorizes, blocks, stops, or limits PCB work. The default report is
+evidence/readbacks/execution-timing.json. Input errors exit 1.
 `;
 }
 
 function parseArgs(argv) {
   const options = {
     operationLog: null,
-    output: null,
+    output: DEFAULT_OUTPUT,
     taskStartedAt: null,
     evaluatedAt: null,
     selfTest: false,
@@ -45,10 +49,6 @@ function parseArgs(argv) {
       process.stdout.write(usage());
       process.exit(0);
     } else throw new Error(`unknown option: ${option}`);
-  }
-  if (!options.selfTest) {
-    if (!options.operationLog) throw new Error("--operation-log is required");
-    if (!options.output) throw new Error("--output is required");
   }
   return options;
 }
@@ -179,6 +179,8 @@ function entry(overrides = {}) {
     gateProgress: "NO_CHANGE",
     outcome: "COMMITTED",
     semanticReadback: "candidate rejected",
+    recordedBy: "TOOL",
+    tool: "self-test-tool.mjs",
     evidence: ["evidence/readbacks/step-1.json"],
     ...overrides,
   };
@@ -218,15 +220,34 @@ function selfTest() {
 }
 
 async function main() {
+  const startedAt = new Date();
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return selfTest();
-    const log = JSON.parse(await readFile(path.resolve(options.operationLog), "utf8"));
+    const operationLogPath = resolveOperationLogPath(options.operationLog, options.output);
+    const log = JSON.parse(await readFile(operationLogPath, "utf8"));
     const result = analyzeExecutionTiming(log, options);
     const output = resolveSafeOutputPath(options.output);
     await writeFile(output, `${JSON.stringify(result, null, 2)}\n`);
+    const endedAt = new Date();
+    await appendToolLogEntry(operationLogPath, {
+      tool: "easyeda_execution_timing.mjs",
+      gate: "EXECUTION_TIMING_RECORDED",
+      operation: "operation-log timing summary",
+      outcome: "READ_ONLY",
+      semanticReadback: `${result.status}; summarized ${result.summary.stepCount} prior step(s); controlsExecution=false`,
+      startedAt,
+      endedAt,
+      attemptDisposition: "READ_ONLY",
+      gateProgress: "NO_CHANGE",
+      evidence: [output],
+    });
     process.stdout.write(`${JSON.stringify({ status: result.status, output, summary: result.summary })}\n`);
   } catch (error) {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "easyeda_execution_timing.mjs", gate: "EXECUTION_TIMING_RECORDED", startedAt, error,
+      defaultOutput: DEFAULT_OUTPUT,
+    }).catch(() => {});
     process.stderr.write(`${JSON.stringify({ error: error.message, kind: "easyeda-execution-timing-report", fabricationRelease: false }, null, 2)}\n`);
     process.exitCode = 1;
   }

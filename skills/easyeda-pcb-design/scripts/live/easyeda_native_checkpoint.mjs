@@ -13,15 +13,28 @@ import {
   notAFabricationReleaseMessage,
   resolveSafeOutputPath,
 } from "../lib/audit_common.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { evidencePathFromInput, resolveOperationLogPath } from "./lib/tool_runtime.mjs";
+
+const FAILURE_OUTPUT = "evidence/readbacks/native-checkpoint-error.json";
+
+function defaultOutput(options) {
+  const source = options.mode === "create" ? options.native : options.manifest;
+  const stem = path.basename(source || "native", path.extname(source || ""))
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+  if (options.mode === "create") return evidencePathFromInput(source, "snapshots", `${stem}-checkpoint.json`);
+  if (options.mode === "verify-restore") return evidencePathFromInput(source, "readbacks", `${stem}-restore-check.json`);
+  return evidencePathFromInput(source, "readbacks", `${stem}-check.json`);
+}
 
 function usage() {
   return `Usage:
   node scripts/live/easyeda_native_checkpoint.mjs create \\
-    --native FILE.epro --readback PCB.json --output checkpoint.json
+    --native FILE.epro --readback PCB.json [--output checkpoint.json] [--operation-log FILE]
   node scripts/live/easyeda_native_checkpoint.mjs verify \\
-    --manifest checkpoint.json --native FILE.epro --readback PCB.json --output check.json
+    --manifest checkpoint.json --native FILE.epro --readback PCB.json [--output check.json] [--operation-log FILE]
   node scripts/live/easyeda_native_checkpoint.mjs verify-restore \\
-    --manifest checkpoint.json --native FILE.epro --readback RESTORED_PCB.json --output restore-check.json
+    --manifest checkpoint.json --native FILE.epro --readback RESTORED_PCB.json [--output restore-check.json] [--operation-log FILE]
   node scripts/live/easyeda_native_checkpoint.mjs --self-test
 
 Create records a native export plus saved/reopened semantic readback. Verify
@@ -32,7 +45,7 @@ export, import, restore, mutate EasyEDA, or authorize fabrication.
 
 function parseArgs(argv) {
   const options = {
-    mode: null, native: null, readback: null, manifest: null, output: null, selfTest: false,
+    mode: null, native: null, readback: null, manifest: null, output: null, operationLog: null, selfTest: false,
   };
   if (["create", "verify", "verify-restore"].includes(argv[0])) options.mode = argv.shift();
   for (let index = 0; index < argv.length; index += 1) {
@@ -46,6 +59,7 @@ function parseArgs(argv) {
     else if (option === "--readback") options.readback = next();
     else if (option === "--manifest") options.manifest = next();
     else if (option === "--output") options.output = next();
+    else if (option === "--operation-log") options.operationLog = next();
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(usage());
@@ -54,13 +68,14 @@ function parseArgs(argv) {
   }
   if (!options.selfTest) {
     if (!options.mode) throw new Error("mode must be create, verify, or verify-restore");
-    for (const field of ["native", "readback", "output"]) {
+    for (const field of ["native", "readback"]) {
       if (!options[field]) throw new Error(`--${field} is required`);
     }
     if (["verify", "verify-restore"].includes(options.mode) && !options.manifest) {
       throw new Error("--manifest is required");
     }
     if (options.mode === "create" && options.manifest) throw new Error("--manifest is only valid in verify mode");
+    if (!options.output) options.output = defaultOutput(options);
   }
   return options;
 }
@@ -312,6 +327,7 @@ async function selfTest() {
 }
 
 async function main() {
+  const startedAt = new Date();
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return await selfTest();
@@ -332,9 +348,27 @@ async function main() {
     }
     const output = resolveSafeOutputPath(options.output);
     await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx" });
+    const endedAt = new Date();
+    const accepted = result.executeAllowed !== false;
+    await appendToolLogEntry(resolveOperationLogPath(options.operationLog, options.output), {
+      tool: "easyeda_native_checkpoint.mjs",
+      gate: options.mode === "verify-restore" ? "NATIVE_RESTORE_READY" : "NATIVE_CHECKPOINT_READY",
+      operation: `native checkpoint ${options.mode}`,
+      outcome: "READ_ONLY",
+      semanticReadback: `${result.status}; executeAllowed=${result.executeAllowed}`,
+      startedAt,
+      endedAt,
+      attemptDisposition: accepted ? "ACCEPTED" : "REJECTED",
+      gateProgress: accepted ? "CLOSED" : "BLOCKED",
+      evidence: [output],
+    });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exitCode = result.executeAllowed === false ? 2 : 0;
   } catch (error) {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "easyeda_native_checkpoint.mjs", gate: "NATIVE_CHECKPOINT_READY", startedAt, error,
+      defaultOutput: FAILURE_OUTPUT,
+    }).catch(() => {});
     process.stderr.write(`${JSON.stringify({ error: error.message, kind: "easyeda-native-checkpoint", fabricationRelease: false }, null, 2)}\n`);
     process.exitCode = 1;
   }
@@ -344,6 +378,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();
 
 export {
   createCheckpoint,
+  defaultOutput,
   parseArgs,
   semanticContentFingerprint,
   semanticSummary,

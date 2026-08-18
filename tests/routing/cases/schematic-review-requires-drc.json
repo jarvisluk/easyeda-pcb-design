@@ -1,0 +1,36 @@
+{
+  "id": "schematic-review-requires-drc",
+  "why": "Guards the schematic-closure boundary: schematic DRC is required before any clear or verified schematic conclusion, even when the task is schematic-only and will never enter PCB work.",
+  "request": "review my existing EasyEDA schematic only; do not do any PCB work. I have not run schematic DRC yet. Is the schematic okay?",
+  "readOnly": true,
+  "expect": {
+    "entryState": "existing schematic",
+    "enterAtPhase": 3,
+    "scopeLastPhase": 3,
+    "mode": "review or release",
+    "tierAnyOf": ["baseline"],
+    "mustLoad": [
+      "references/workflows/entry-routing.md",
+      "references/workflows/schematic-workflow.md",
+      "references/workflows/review-checklist.md"
+    ],
+    "mustNotLoad": [
+      "references/workflows/pcb-workflow.md",
+      "references/workflows/drc-evidence-closure.md",
+      "references/api/manufacturing-output.md"
+    ],
+    "mustState": [
+      "the task is schematic-only and no PCB placement, routing, copper, mechanics, or manufacturing conclusion is in scope",
+      "SCHEMATIC_DRC_CLEAR is required before calling the schematic clear, verified, correct, or problem-free even though no PCB work is requested",
+      "because current saved/reopened schematic DRC evidence is missing, the conclusion is insufficient evidence rather than clear",
+      "a clean schematic DRC is necessary but does not waive identity, connectivity, part, footprint, presentation, or applicable specialized checks",
+      "the next action is to run and bind current strict schematic DRC evidence, not to enter PCB work"
+    ],
+    "mustNotState": [
+      "schematic DRC can be deferred until PCB creation or synchronization",
+      "the schematic is okay based only on visual inspection, netlist identity, or the absence of a reported problem",
+      "any fabrication or order-readiness conclusion"
+    ]
+  },
+  "notes": "The expected review conclusion is insufficient evidence. This case deliberately excludes PCB work so the DRC requirement cannot be misread as merely a schematic-to-PCB handoff gate."
+}

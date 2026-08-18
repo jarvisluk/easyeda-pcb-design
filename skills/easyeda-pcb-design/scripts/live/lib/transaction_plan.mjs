@@ -8,6 +8,7 @@ import {
   operationCounts,
   operationDefinition,
 } from "./operation_registry.mjs";
+import { withTransactionControlDefaults } from "./tool_runtime.mjs";
 
 const COPPER_LAYER_RE = /^(?:TOP|BOTTOM|INNER_(?:[1-9]|[12][0-9]|30))$/;
 const LAYER_ENUM_EXAMPLES = Object.freeze(["INNER_1", "INNER_30"]);
@@ -21,6 +22,11 @@ const REQUIRED_CONTROLS = Object.freeze([
   "gateLedgerCheck",
   "postPlacementReport",
   "operationLog",
+  "preEditState",
+  "postEditState",
+  "planCheck",
+  "transactionResult",
+  "verificationReport",
 ]);
 const PRE_PLACEMENT_MODES = new Set(["route", "repair", "copper"]);
 
@@ -63,7 +69,7 @@ function legacyOperations(plan) {
 function normalizeTransactionPlan(plan) {
   if (!plan || typeof plan !== "object" || Array.isArray(plan)) return plan;
   if (plan.schemaVersion === 2 && plan.kind === "easyeda-transaction-plan") {
-    return structuredClone(plan);
+    return withTransactionControlDefaults(plan, "pcb");
   }
   const legacyMode = plan.kind === "easyeda-route-transaction-plan"
     ? "route"
@@ -72,7 +78,7 @@ function normalizeTransactionPlan(plan) {
       : null;
   if (plan.schemaVersion !== 1 || !legacyMode) return structuredClone(plan);
   const operations = legacyOperations(plan);
-  return {
+  return withTransactionControlDefaults({
     schemaVersion: 2,
     kind: "easyeda-transaction-plan",
     compatibility: { sourceSchemaVersion: 1, execution: "DRY_RUN_ONLY" },
@@ -103,7 +109,7 @@ function normalizeTransactionPlan(plan) {
       prePlacementReport: plan.controls?.placementReport,
       postPlacementReport: plan.controls?.placementReport,
     },
-  };
+  }, "pcb");
 }
 
 function validateLayer(value, allowed, field, errors) {

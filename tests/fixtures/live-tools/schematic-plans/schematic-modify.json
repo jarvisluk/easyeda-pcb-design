@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 2,
+  "kind": "easyeda-schematic-transaction-plan",
+  "mode": "existing-schematic-modification",
+  "transactionId": "schematic-modify-fixture",
+  "gate": "BOUNDED_SCHEMATIC_TRANSACTION",
+  "attemptFamily": "schematic-modify",
+  "attemptIndex": 1,
+  "targetClass": "NON_PRODUCTION_PROBE",
+  "projectUuid": "project-1",
+  "schematicUuid": "schematic-1",
+  "schematicPageUuid": "page-1",
+  "baselineFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "artifactRoot": ".",
+  "operations": [
+    {
+      "operationId": "component-move-u1",
+      "type": "schematic.component.modify",
+      "primitiveId": "component-1",
+      "expectedBefore": { "designator": "U1", "uniqueId": "U1-STABLE", "x": 100 },
+      "changes": { "x": 120 }
+    },
+    {
+      "operationId": "component-delete-u2",
+      "type": "schematic.component.delete",
+      "primitiveId": "component-2",
+      "expectedBefore": { "designator": "U2", "uniqueId": "U2-STABLE" }
+    },
+    {
+      "operationId": "wire-modify-new-net",
+      "type": "schematic.wire.modify",
+      "primitiveId": "wire-2",
+      "expectedBefore": { "line": [120, 100, 120, 120], "net": "OLD" },
+      "changes": { "net": "NEW" }
+    },
+    {
+      "operationId": "wire-delete-old",
+      "type": "schematic.wire.delete",
+      "primitiveId": "wire-1",
+      "expectedBefore": { "line": [100, 100, 100, 120], "net": "OLD" }
+    }
+  ],
+  "rollback": { "strategy": "RESTORE_CHECKPOINT" },
+  "acceptance": {
+    "expectedDeltas": { "components": -1, "wires": -1, "annotations": 0 },
+    "requireSavedReopen": true,
+    "requireStableErc": true,
+    "requireNoNewErc": true,
+    "requireUntouchedIdentity": true,
+    "pinNetAssertions": [
+      { "uniqueId": "U1-STABLE", "pinNumber": "1", "net": "" }
+    ]
+  },
+  "controls": {
+    "authorizationRecord": "evidence/readbacks/authorization.json",
+    "gateLedgerCheck": "evidence/readbacks/gate-ledger-check.json",
+    "preEditState": "evidence/readbacks/before.json",
+    "rollbackCheck": "evidence/readbacks/restore-check.json",
+    "operationLog": "evidence/readbacks/operation-log.json"
+  }
+}

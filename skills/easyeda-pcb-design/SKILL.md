@@ -17,7 +17,7 @@ an earlier one.
 | --- | --- | --- |
 | Requirements and primary functions | `PRIMARY_FUNCTIONS_CONFIRMED` | `entry-routing.md` |
 | Part selection and library binding | cleared component evidence | `component-selection-evidence.md` |
-| Schematic build and verification | `SCHEMATIC_IDENTITY_STABLE`, `SCHEMATIC_VERIFIED` | `schematic-workflow.md` |
+| Schematic build and verification | `SCHEMATIC_IDENTITY_STABLE`, `SCHEMATIC_DRC_CLEAR`, `SCHEMATIC_VERIFIED` | `schematic-workflow.md` |
 | Schematic-to-PCB handoff | exact-revision handoff | `entry-routing.md` |
 | Outline, stackup, constraints, sync | `CLEARED_FOR_PLACEMENT`, `PCB_SYNC_MATCH` | `constraint-planning.md`, `pcb-workflow.md` |
 | Placement | `PLACEMENT_CLEAR_FOR_ROUTING` | `placement-closure.md` |
@@ -75,12 +75,13 @@ Use the `easyeda-api` skill/companion for live EasyEDA work. Read
 class/method docs, and the applicable live branch before writes. First run:
 
 ```bash
-node scripts/live/check_companion.mjs
+node <skill>/scripts/live/check_companion.mjs
 ```
 
-Require exit `0` and `ready: true`. Bind project/document UUIDs, await every
-call, and trust saved/switched/reopened semantic readback over return values.
-Qualify unknown beta writes in a non-production probe.
+Run it with `<project>` as the working directory. Require exit `0` and
+`ready: true`. Bind project/document UUIDs, await every call, and trust
+saved/switched/reopened semantic readback over return values. Qualify unknown
+beta writes in a non-production probe.
 
 The only UI creation exception is one final-named project attempt after proven
 API non-commit and operation-specific confirmation. A read-only UI native
@@ -93,8 +94,6 @@ Every live mutation requires:
 - immutable pre-edit semantic evidence and an operation-appropriate inverse or
   separately verified restore path;
 - exact UUID and baseline-fingerprint binding;
-- an append-only schema-2 operation log with transaction/attempt identity,
-  start/end timestamps, measured duration, outcome, progress, and evidence;
 - a gate ledger whose integrity is `CLEARED`; `CLEARED` plus `INCOMPLETE` means
   honest work in progress, not closure or failure;
 - after placement, a current schema-3 placement report with native board
@@ -104,19 +103,15 @@ Every live mutation requires:
 - save/switch/reopen, exact-delta readback, repeated detailed DRC, and gate
   verification after the transaction.
 
-Summarize elapsed time with `easyeda_execution_timing.mjs`. Timing is
-observational telemetry only: duration may trigger a progress notice, but never
-authorizes, blocks, stops, or limits PCB work. Stop only for an applicable
-design, authorization, identity, rollback, readback, DRC, or gate condition.
-When answering a timing question about live work, state both facts explicitly:
-time does not control execution, and the operation log still records start/end
-timestamps plus measured duration for every application and verification step.
+Timing is observational only and never controls execution. For timing questions,
+load [live-build-gates.md](references/workflows/live-build-gates.md).
 
-Use schema-2 JSON plans with `easyeda_transaction.mjs` for route, repair,
-placement, outline, and copper instead of per-attempt browser scripts. It must stop at
-`TRANSACTION_APPLIED_PENDING_REOPEN`; collect current state with
-`inspect_current_state.mjs --with-drc`, then require `TRANSACTION_VERIFIED` from
-`verify_gate.mjs` before advancing. Fast no-DRC inspection is preflight only.
+Use schema-2 plans, never per-attempt browser scripts. `easyeda_transaction.mjs`
+owns PCB geometry; `easyeda_schematic_transaction.mjs` owns component/wire
+create, modify, and delete. Save/switch/reopen, capture matching current state,
+then require `TRANSACTION_VERIFIED` or `SCHEMATIC_TRANSACTION_VERIFIED` from the
+corresponding gate verifier. A transaction result or fast inspection alone
+never closes a gate.
 
 Obtain operation-specific confirmation for destructive work outside the chosen
 branch, bulk synchronization, mass identity/net changes, forced overwrite, or
@@ -184,8 +179,10 @@ Load only references needed by the selected slice:
 
 Do not load audit implementation for ordinary guidance or high-speed material
 for a confirmed baseline design. During review, inventory evidence first, then
-load references behind actual findings. Never use certification language
-without the required compliance evidence.
+load references behind actual findings. A specialized technology named in the
+request is already an actual routing finding, so load its specialist references
+during classification. Never use certification language without the required
+compliance evidence.
 
 ## Use audits at their owning gates
 
@@ -212,7 +209,8 @@ Use the phase tools when applicable: `requirements_baseline_lint.mjs`,
 `easyeda_crystal_clock_audit.mjs`, `easyeda_high_speed_audit.mjs`, `pcb_calc.py`,
 and `easyeda_manufacturing_audit.py`. Bind outputs to the exact revision and read
 their limitations. Geometry does not prove electrical, mechanical, or process
-intent. Agents must never create human-attestation evidence.
+intent. Agents never create human-attestation evidence or hand-write tool
+reports or gate renderings.
 
 ## Report review conclusions
 
@@ -220,7 +218,7 @@ Identify exact revision and scope; lead with clear, blocked, or insufficient
 evidence; explain material findings in severity order; name assumptions,
 exceptions, exclusions, and open gates; then state the next action. A schematic
 review must say PCB placement, routing, copper, mechanics, and manufacturing were
-not reviewed.
+not reviewed. Only `SCHEMATIC_DRC_CLEAR` permits clear schematic conclusions.
 
 For fabrication/order readiness, use exactly `PASS WITH DOCUMENTED
 ASSUMPTIONS/EXCEPTIONS`, `FAIL`, or `UNVERIFIED FOR FABRICATION`. State which

@@ -8,6 +8,7 @@
 - Capability dispositions
 - Schema-2 transaction plans
 - Registered geometry operations
+- Schematic transaction plans and operations
 - Control and rollback contracts
 - Execution and verification
 - Compatibility and migration
@@ -31,7 +32,8 @@ selection-dependent operations retain a dedicated gate or are refused.
 The runtime has four layers:
 
 1. **Shared runtime** — bridge discovery, window selection, bounded execution,
-   contained artifact paths, JSON input, immutable output, and uniform errors.
+   contained artifact paths, JSON input, immutable output, uniform errors, and
+   locked tool-owned operation-log creation/append.
 2. **Capability registry** — one disposition and owner for every recognized
    mutating API pattern.
 3. **Transaction engine** — schema validation, operation adapters, control
@@ -45,7 +47,7 @@ independent from plan-specific coordinates, nets, IDs, and pass numbers.
 
 ## Stable command surface
 
-The installable skill exposes ten live commands. Files under `scripts/live/lib/`
+The installable skill exposes fourteen live commands. Files under `scripts/live/lib/`
 are libraries, not additional agent entrypoints.
 
 | Command | Responsibility |
@@ -60,6 +62,32 @@ are libraries, not additional agent entrypoints.
 | `verify_gate.mjs` | Verify saved/reopened exact deltas and gate evidence |
 | `easyeda_execution_timing.mjs` | Summarize step, attempt, gate, and total elapsed time without controlling execution |
 | `easyeda_gate_ledger.mjs` | Enforce gate order, evidence, telemetry, and completion |
+| `inspect_schematic_state.mjs` | Reopen and capture schematic primitives, JLCEDA netlist, strict DRC/ERC, and fingerprints |
+| `easyeda_schematic_checkpoint.mjs` | Bind native schematic checkpoints and verify a separate restore |
+| `easyeda_schematic_transaction.mjs` | Validate or execute one bounded component/wire transaction |
+| `verify_schematic_gate.mjs` | Verify saved/reopened schematic deltas, identity, net assertions, and DRC/ERC deltas |
+
+Run `check_companion.mjs` from the board project root. With no arguments it
+writes `evidence/readbacks/companion-check.json`; `--output` remains an optional
+override for callers that need another report path.
+
+Run the other examples from that same project root. Generated report paths are
+defaults; pass `--output` only to override one deliberately.
+
+Shortest safe forms:
+
+| Purpose | Command arguments after the script name |
+| --- | --- |
+| Companion, PCB snapshot, repair snapshot, timing, ledger integrity, revision inventory | none |
+| PCB or schematic transaction | `--plan FILE` and optional `--execute` |
+| PCB transaction state | `--plan FILE --stage before\|after`, plus `--with-drc` after execution |
+| PCB or schematic gate verification | `--plan FILE` |
+| Schematic transaction state | `--plan FILE --stage before\|after --switch-document-uuid UUID` |
+| Native checkpoint | mode plus native/readback inputs; verify modes also require the manifest |
+| Identity preflight | the exact schematic page UUID; native matching also requires schematic and PCB UUIDs |
+
+Target identity, authorization, `--execute`, and overwrite intent never become
+implicit. Bridge/window selectors remain optional discovery overrides.
 
 Do not add another top-level live command for a different net, placement pass,
 outline candidate, cleanup attempt, or board. Change a plan instead.
@@ -165,6 +193,32 @@ as route mode. Outline and placement modes deliberately do not require a clear
 pre-placement report because they may be repairing the condition that prevented
 that report from clearing. They still require a clear post-placement report.
 
+## Schematic transaction plans and operations
+
+Use `kind: "easyeda-schematic-transaction-plan"` with mode
+`new-construction` or `existing-schematic-modification`. Plans bind the exact
+project, parent schematic, page UUID, pre-edit schematic fingerprint, attempt,
+target class, rollback, acceptance, and control evidence. Supported operations
+are:
+
+| Operation | Required operation data |
+| --- | --- |
+| `schematic.component.create` | exact DEVICE library UUID/device UUID, pose, designator, stable unique ID, BOM/PCB flags |
+| `schematic.component.modify` | exact primitive ID, expected-before fields, and bounded pose or top-level identity/property changes |
+| `schematic.component.delete` | exact primitive ID and expected-before identity |
+| `schematic.wire.create` | orthogonal line path, deterministic net, color, width, and line-type enum |
+| `schematic.wire.modify` | exact primitive ID, expected-before fields, and bounded path/net/style changes |
+| `schematic.wire.delete` | exact primitive ID and expected-before net/geometry |
+
+New construction is create-only and uses `DELETE_CREATED_IDS`. Any modification
+or deletion uses `RESTORE_CHECKPOINT` and requires
+`SCHEMATIC_RESTORE_MATCH` from importing the bound native `.epro` into a
+separate non-production project. A production plan also requires a verified
+`NON_PRODUCTION_PROBE` result with the same capability fingerprint. Acceptance
+must require saved reopen, stable repeated ERC, no new ERC, exact collection
+deltas, untouched identity, and pin/net assertions for every wire write.
+Reserved library-association keys are not accepted through `otherProperty`.
+
 ## Control and rollback contracts
 
 Every plan binds:
@@ -177,8 +231,21 @@ Every plan binds:
 - a clear pre-placement report for route, ordinary repair, and copper;
 - a new post-placement report bound to the saved/reopened after fingerprint.
 
+The validator derives `preEditState`, `postEditState`, `planCheck`,
+`transactionResult`, and `verificationReport` from `transactionId` when those
+control paths are omitted. Explicit controls override the derived paths.
+
 Every application and verification appends start/end timestamps and measured
-duration to the operation log. Run `easyeda_execution_timing.mjs` whenever a
+duration to the operation log. All fourteen live commands emit their own report and
+append their own `recordedBy: "TOOL"` entry; the shared runtime initializes the
+schema-2 log when absent and serializes appends. Standalone commands derive
+`<project>/evidence/readbacks/operation-log.json` from the resolved report path;
+`--operation-log` is only an explicit-path override. An agent must never
+create an empty log, write an entry, edit an earlier entry, or reconstruct a
+failed entry.
+Supported failures are tool-recorded too; if the log is itself malformed, stop
+with unverified evidence rather than overwriting or repairing it.
+Run `easyeda_execution_timing.mjs` whenever a
 human-readable timing summary is needed. Its report has
 `controlsExecution: false`; no elapsed duration is a transaction control.
 
@@ -196,13 +263,10 @@ validator rejects hand-entered deltas that disagree with operations.
 Validate first, then execute the same immutable plan:
 
 ```bash
-node scripts/live/easyeda_transaction.mjs \
-  --plan <project>/plans/routes/gpio8-001.json \
-  --output evidence/readbacks/gpio8-plan-check.json
-node scripts/live/easyeda_transaction.mjs \
-  --plan <project>/plans/routes/gpio8-001.json \
-  --execute \
-  --output evidence/readbacks/gpio8-result.json
+node <skill>/scripts/live/easyeda_transaction.mjs \
+  --plan plans/routes/gpio8-001.json
+node <skill>/scripts/live/easyeda_transaction.mjs \
+  --plan plans/routes/gpio8-001.json --execute
 ```
 
 Execution performs one fast exact-revision preflight, applies only registered
@@ -216,20 +280,24 @@ capture current state immediately; never retry from the error message alone.
 After save/switch/reopen, collect one full state and rerun placement closure:
 
 ```bash
-node scripts/live/inspect_current_state.mjs --with-drc \
-  --output <project>/evidence/readbacks/gpio8-after.json
-node scripts/live/verify_gate.mjs \
-  --plan <project>/plans/routes/gpio8-001.json \
-  --before evidence/readbacks/gpio8-before.json \
-  --after evidence/readbacks/gpio8-after.json \
-  --transaction-result evidence/readbacks/gpio8-result.json \
-  --output evidence/readbacks/gpio8-gate-check.json
+node <skill>/scripts/live/inspect_current_state.mjs \
+  --plan plans/routes/gpio8-001.json --stage after --with-drc
+node <skill>/scripts/live/verify_gate.mjs --plan plans/routes/gpio8-001.json
 ```
 
 Verification requires exact returned IDs for creates, absence of exact deletion
 IDs, preservation of untouched IDs, no unplanned new residue, matching modified
 component fields, expected collection deltas, current containment, and stable
 repeated DRC. Only `TRANSACTION_VERIFIED` may advance the owning gate.
+
+For schematic work, capture the before state with
+`inspect_schematic_state.mjs --with-drc`, execute the immutable plan, capture a
+second saved/reopened state, and run `verify_schematic_gate.mjs`. The transaction
+stops at `SCHEMATIC_TRANSACTION_APPLIED_PENDING_REOPEN`; only
+`SCHEMATIC_TRANSACTION_VERIFIED` advances its gate. Returned create IDs,
+primitive deltas, untouched components/wires, live designator/unique-ID
+uniqueness, JLCEDA component identity, declared pin/net assertions, and ERC
+deltas must all match. Unknown commitment is inspected, never blindly replayed.
 
 ## Compatibility and migration
 
@@ -243,7 +311,8 @@ evidence. Do not delete, rewrite, or relabel them as current. Migration means:
 
 1. map every mutating API pattern to the capability registry;
 2. encode net, pass, coordinates, IDs, and acceptance differences as JSON;
-3. prove representative route, repair, placement, outline, and copper plans;
+3. prove representative route, repair, placement, outline, copper, and
+   schematic create/modify/delete plans;
 4. use only stable commands for future execution;
 5. bind every new result to its own current revision.
 

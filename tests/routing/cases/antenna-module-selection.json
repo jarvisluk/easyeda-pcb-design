@@ -1,6 +1,6 @@
 {
   "id": "antenna-module-selection",
-  "why": "Guards the phase-1 early-load rule for RADIO_ANTENNA. SKILL.md routes onboard-antenna.md as soon as the RADIO_ANTENNA decision is anything but a sourced NOT_APPLICABLE, which is counter-intuitive because the reference reads like a layout document. This case is also the only automated guard over the ORIENTATION_VIOLATION, ORIENTATION_CLEARED, and NOT_SUPPLIED prose-only gates, which no script validates.",
+  "why": "Manually evaluates the phase-1 early-load rule for RADIO_ANTENNA. SKILL.md routes onboard-antenna.md as soon as the RADIO_ANTENNA decision is anything but a sourced NOT_APPLICABLE, which is counter-intuitive because the reference reads like a layout document. This case is also the only repeatable behavioral check over the ORIENTATION_VIOLATION, ORIENTATION_CLEARED, and NOT_SUPPLIED prose-only gates, which no script validates.",
   "request": "help me pick an ESP32 WiFi module for a small board, just selection and rough architecture for now",
   "readOnly": true,
   "expect": {

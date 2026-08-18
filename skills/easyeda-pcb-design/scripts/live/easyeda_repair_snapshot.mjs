@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { cliFailure, executeEasyedaCode, writeNewJson } from "./lib/tool_runtime.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { cliFailure, executeEasyedaCode, resolveOperationLogPath, timestampSlug, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const PCB_DOCUMENT_TYPE = 3;
+const CLI_STARTED_AT = new Date();
+const DEFAULT_OUTPUT = `evidence/snapshots/pre-repair-${timestampSlug(CLI_STARTED_AT)}.json`;
 
 function usage() {
   return `Usage:
-  node scripts/live/easyeda_repair_snapshot.mjs --output FILE [options]
+  node scripts/live/easyeda_repair_snapshot.mjs [--output FILE] [options]
 
 Options:
   --bridge-port PORT  Use one bridge port instead of scanning
   --window-id ID      Required when multiple EasyEDA windows exist
-  --output FILE       Relative path under cwd for immutable semantic evidence
+  --output FILE       Override the generated immutable snapshot path
+  --operation-log FILE  Override the tool-managed log path derived from --output
   --self-test         Run deterministic offline checks
   --help              Show this help
 `;
@@ -22,7 +26,8 @@ function parseArgs(argv) {
   const options = {
     bridgePort: undefined,
     windowId: undefined,
-    output: undefined,
+    output: DEFAULT_OUTPUT,
+    operationLog: undefined,
     selfTest: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -35,6 +40,7 @@ function parseArgs(argv) {
     if (option === "--bridge-port") options.bridgePort = Number(next());
     else if (option === "--window-id") options.windowId = next();
     else if (option === "--output") options.output = next();
+    else if (option === "--operation-log") options.operationLog = next();
     else if (option === "--self-test") options.selfTest = true;
     else if (option === "--help" || option === "-h") {
       process.stdout.write(usage());
@@ -47,7 +53,6 @@ function parseArgs(argv) {
   ) {
     throw new Error("--bridge-port must be an integer from 1 to 65535");
   }
-  if (!options.selfTest && !options.output) throw new Error("--output is required");
   return options;
 }
 
@@ -187,10 +192,11 @@ return {
 }
 
 async function main() {
+  const startedAt = CLI_STARTED_AT;
   const options = parseArgs(process.argv.slice(2));
   if (options.selfTest) {
-    assert.throws(() => parseArgs([]), /--output is required/);
-    assert.equal(parseArgs(["--output", "snapshot.json"]).output, "snapshot.json");
+    assert.equal(parseArgs([]).output, DEFAULT_OUTPUT);
+    assert.equal(parseArgs(["--output", "snapshot.json", "--operation-log", "operation-log.json"]).output, "snapshot.json");
     assert.throws(() => parseArgs(["--output", "snapshot.json", "--force"]), /unknown option/);
     assert.match(collectorCode(), /easyeda-existing-board-repair-semantic-capture/);
     assert.match(collectorCode(), /closesRollbackSnapshotVerified: false/);
@@ -212,6 +218,19 @@ async function main() {
     bridge: { port: call.bridge.port, windowId: response.windowId || call.windowId },
   };
   const outputPath = await writeNewJson(options.output, snapshot);
+  const endedAt = new Date();
+  await appendToolLogEntry(resolveOperationLogPath(options.operationLog, options.output), {
+    tool: "easyeda_repair_snapshot.mjs",
+    gate: "ROLLBACK_EVIDENCE_READY",
+    operation: "existing-board semantic repair snapshot",
+    outcome: "READ_ONLY",
+    semanticReadback: `captured ${snapshot.components.length} component(s), ${snapshot.lines.length} line(s), ${snapshot.vias.length} via(s), and ${snapshot.pours.length} pour(s)`,
+    startedAt,
+    endedAt,
+    attemptDisposition: "ACCEPTED",
+    gateProgress: "CLOSED",
+    evidence: [outputPath],
+  });
   process.stdout.write(`${JSON.stringify({
     output: outputPath,
     project: snapshot.project,
@@ -226,6 +245,10 @@ async function main() {
   }, null, 2)}\n`);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  await appendToolFailureFromArgv(process.argv.slice(2), {
+    tool: "easyeda_repair_snapshot.mjs", gate: "ROLLBACK_EVIDENCE_READY", startedAt: CLI_STARTED_AT, error,
+    defaultOutput: DEFAULT_OUTPUT,
+  }).catch(() => {});
   cliFailure(error, "easyeda-existing-board-repair-semantic-capture");
 });

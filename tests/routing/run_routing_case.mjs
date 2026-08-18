@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
-// Repository maintenance harness for routing-only forward tests.
+// Repository maintenance harness for manual routing-only forward evaluations.
 //
-// These cases test the behavioral surface of the skill -- entry state, scope,
+// These cases evaluate the behavioral surface of the skill -- entry state, scope,
 // mode, technical-depth tier, and which references get loaded -- which no
 // deterministic self-test can reach. They stop as soon as the agent has stated
 // its routing decision, so they cost a fraction of a full board task.
 //
-// This script does not drive an agent. It validates the case fixtures and emits
-// the exact read-only prompt to hand to a fresh-context agent session, then
+// This script does not drive an agent or score a reply. It validates the case
+// fixtures and emits the exact read-only prompt to hand to a fresh-context agent session, then
 // records the expectations to compare the reply against. Keeping the agent step
 // manual is deliberate: the point is to observe unprompted routing behavior, and
 // a harness that fed the expectations to the agent would prove nothing.
@@ -225,7 +225,7 @@ function selfTest() {
     }
   }
 
-  console.log("routing case harness self-test passed (" + cases.length + " cases validated)");
+  console.log("manual routing eval harness self-test passed (" + cases.length + " cases validated)");
   return EXIT.OK;
 }
 
@@ -238,7 +238,7 @@ function main(argv) {
 
   const cases = loadCases();
   if (argv.includes("--list") || argv.length === 0) {
-    console.log("routing cases (" + cases.length + "):");
+    console.log("manual routing eval cases (" + cases.length + "):");
     for (const entry of cases) {
       console.log("");
       console.log("  " + entry.record.id);

@@ -30,6 +30,11 @@ or existing-board repair branch before writes. They prevent an unverified API
 behavior, hidden identity state, or failed routing pattern from being multiplied
 without turning construction prerequisites into retroactive blockers.
 
+Run live commands from the board project root and resolve `<skill>` to this
+installed skill directory. Omit generated report paths unless an explicit
+override is needed; transaction plans derive their evidence paths from
+`transactionId`.
+
 Do not treat a new PCB document as the default rollback mechanism. Prefer an
 operation-scoped rollback artifact only after restoration is proven. Create a new revision only when the
 current document cannot be repaired without destructive mutation or its hidden
@@ -46,9 +51,11 @@ delete and replace local primitives.
 Obtain operation-specific confirmation before destructive deletion outside the
 selected branch, bulk synchronization, mass identity/net changes, forced
 overwrite, or another high-risk mutation. Before relying on that confirmation,
-append a `READ_ONLY` operation-log entry quoting the user's words and naming the
-operation they cover. An inferred grant, an enthusiastic generality, or an
-earlier task's grant is not one.
+bind the user's exact words in the authorization artifact and run the owning
+live tool; the tool must append the `READ_ONLY` authorization entry itself. If
+no supported tool can record it, stop. An agent must never write or patch that
+entry. An inferred grant, an enthusiastic generality, or an earlier task's grant
+is not one.
 
 Every mutation requires exact UUID binding, immutable pre-edit evidence,
 operation-appropriate rollback evidence, bounded calls, saved-design readback,
@@ -111,12 +118,13 @@ Advance in this order:
 2. `PROJECT_BOUND`
 3. `PRIMARY_FUNCTIONS_CONFIRMED`
 4. `SCHEMATIC_IDENTITY_STABLE`
-5. `SCHEMATIC_VERIFIED`
-6. `PCB_SYNC_MATCH`
-7. `ROUTING_CANARY_CLEAR`
-8. `FULL_ROUTING_CLEAR`
-9. `COPPER_CANARY_CLEAR`
-10. `DESIGN_CLOSURE`
+5. `SCHEMATIC_DRC_CLEAR`
+6. `SCHEMATIC_VERIFIED`
+7. `PCB_SYNC_MATCH`
+8. `ROUTING_CANARY_CLEAR`
+9. `FULL_ROUTING_CLEAR`
+10. `COPPER_CANARY_CLEAR`
+11. `DESIGN_CLOSURE`
 
 Record each transition in the gate ledger described under Gate ledger and
 evidence transactions, and run its lint before advancing.
@@ -143,12 +151,19 @@ product-feature approval. Do not commit the full schematic or connector
 footprints while a material interface, power, programming, radio, control, or
 expansion choice remains unresolved.
 
-`SCHEMATIC_VERIFIED` requires the saved/reopened schematic fingerprint, ERC,
-identity, exact manufacturer part numbers and footprints, and a cleared
+`SCHEMATIC_VERIFIED` is aggregate schematic closure. It requires the current
+saved/reopened fingerprint, identity, exact manufacturer part numbers and
+footprints, the earlier `SCHEMATIC_DRC_CLEAR` gate, and a cleared
 component-selection evidence record under
 [component-selection-evidence.md](component-selection-evidence.md). An
 inaccessible, failed, unreadable, mismatched, stale, or unbound governing source
 blocks this gate even when ERC is clean.
+
+Create each component/wire canary through
+`easyeda_schematic_transaction.mjs`, not a one-off browser script. Capture both
+states with `inspect_schematic_state.mjs --with-drc` and require
+`SCHEMATIC_TRANSACTION_VERIFIED` from `verify_schematic_gate.mjs` before
+expanding the qualified operation pattern.
 
 It also requires the presentation gate in
 [schematic-presentation.md](schematic-presentation.md). Run the geometry screen
@@ -156,7 +171,19 @@ and exact-page visual inspection after the first complete functional block and
 again before handoff; do not defer either until PCB completion. A
 `DEGRADED_LABEL_STUB_PATTERN`, unresolved `REVIEW_REQUIRED`, or a page whose
 local circuits can only be reconstructed from repeated labels blocks
-`SCHEMATIC_VERIFIED` even when ERC and the exported netlist are clean.
+`SCHEMATIC_VERIFIED` even when schematic DRC/ERC and the exported netlist are
+clean.
+
+`SCHEMATIC_DRC_CLEAR` is an independent hard gate before aggregate
+`SCHEMATIC_VERIFIED`. After the complete schematic has been saved, switched away
+from, and reopened, capture it with
+`inspect_schematic_state.mjs --with-drc`. Require the same page UUID and revision
+used for aggregate closure, the exact three-sample strict sequence (two silent
+and one visible), stable detailed results, zero non-warning error groups, and an
+explicit disposition for every warning. `CAPTURED` without DRC decision `CLEAR`,
+a transaction verifier that reports only “no new finding,” or a later clean PCB
+DRC cannot close this gate. Without it, do not call the schematic clear or
+verified, even when the task ends at the schematic and no PCB is requested.
 
 For an existing project, `PROJECT_BOUND` requires exact project UUID and tree
 readback. For a no-design build that must create its project, first preflight
@@ -212,6 +239,12 @@ reopen the schematic, and require:
 - all earlier schematic-to-PCB handoff, synchronization, and dependent PCB
   evidence explicitly marked stale.
 
+Run the change as an `existing-schematic-modification` schema-2 plan. Component
+or wire modification/deletion requires `SCHEMATIC_RESTORE_MATCH` from
+`easyeda_schematic_checkpoint.mjs verify-restore`; its restored readback must
+come from a separate non-production project. After execution, only
+`SCHEMATIC_TRANSACTION_VERIFIED` may close the delta gate.
+
 Do not modify or synchronize a PCB unless the user expands the scope. Close the
 new schematic handoff first, then enter the construction/synchronization path.
 First-component identity qualification is not a retroactive requirement for a
@@ -235,12 +268,13 @@ Advance unfinished PCB work in this order:
 
 1. `COMPANION_READY`
 2. `ACTIVE_PCB_AND_HANDOFF_BOUND`
-3. `PCB_SYNC_MATCH`
-4. `EXISTING_STATE_BASELINED`
-5. `FIRST_INCOMPLETE_GATE_IDENTIFIED`
-6. `CONTINUATION_CANARY_CLEAR`
-7. `INCOMPLETE_WORK_CLOSED`
-8. `DESIGN_CLOSURE`
+3. `SCHEMATIC_DRC_CLEAR`
+4. `PCB_SYNC_MATCH`
+5. `EXISTING_STATE_BASELINED`
+6. `FIRST_INCOMPLETE_GATE_IDENTIFIED`
+7. `CONTINUATION_CANARY_CLEAR`
+8. `INCOMPLETE_WORK_CLOSED`
+9. `DESIGN_CLOSURE`
 
 Before the first write, bind the project, schematic page, parent schematic, PCB
 UUID, saved revision, and handoff evidence. Capture components, pad-net binding,
@@ -296,8 +330,7 @@ each transaction small enough to read back and roll back independently.
 Capture active-PCB semantic evidence directly into the project evidence tree:
 
 ```bash
-node scripts/live/easyeda_repair_snapshot.mjs \
-  --output <project>/evidence/snapshots/pre-repair-<transaction>.json
+node <skill>/scripts/live/easyeda_repair_snapshot.mjs
 ```
 
 This helper records components/pins, lines, arcs, polylines, vias, pours/fills,
@@ -379,6 +412,12 @@ The probe must record:
 - whether cleanup was authorized and completed;
 - the capability conclusion and its version scope.
 
+For schematic component/wire writes, execute the same immutable plan first as
+`targetClass: "NON_PRODUCTION_PROBE"` and verify its saved/reopened result. A
+production plan is accepted only when that verification's capability
+fingerprint matches the operation types and relevant write fields in the
+production plan.
+
 If a dedicated probe project cannot be created or selected, stop with the gate
 blocked until a safe test location exists. Do not learn beta API semantics by
 adding documents to the project holding the user's design. Read [api-map.md](../api/api-map.md) for known runtime behavior and
@@ -406,9 +445,9 @@ remaining component population until it returns `MATCH`.
 
 ## PCB synchronization gate
 
-Complete and verify the schematic before creating the production PCB. After
-the PCB component population and pad-net binding exist, save and reopen both
-documents, then run:
+Complete and verify the schematic, including `SCHEMATIC_DRC_CLEAR`, before
+creating or synchronizing the production PCB. After the PCB component population
+and pad-net binding exist, save and reopen both documents, then run:
 
 ```bash
 node scripts/audits/easyeda_netlist_compare.mjs \
@@ -418,13 +457,12 @@ node scripts/audits/easyeda_netlist_compare.mjs \
   --require-native-match \
   --output <project>/evidence/netlist/pre-routing-sync.json
 
-node scripts/live/easyeda_identity_preflight.mjs \
+node <skill>/scripts/live/easyeda_identity_preflight.mjs \
   --schematic-page-uuid <page-uuid> \
   --schematic-uuid <parent-schematic-uuid> \
   --pcb-uuid <pcb-uuid> \
   --expected-part-count <count> \
-  --require-native-match \
-  --output <project>/evidence/netlist/pre-routing-identity.json
+  --require-native-match
 ```
 
 Require manufacturing identity/pin-net equivalence, stable nonempty IDs, no
@@ -533,14 +571,12 @@ EasyEDA names such as `PCB4` are never the revision authority; the UUID manifest
 is authoritative.
 
 ```bash
-node scripts/live/easyeda_revision_guard.mjs \
-  --manifest <project>/revision-manifest.json \
+node <skill>/scripts/live/easyeda_revision_guard.mjs \
   --intent-role diagnostic \
   --parent-uuid <known-good-pcb-uuid> \
   --reason "test one classified synchronization hypothesis" \
   --success-gate PCB_SYNC_MATCH \
-  --cleanup-disposition delete-after-proof \
-  --output <project>/evidence/readbacks/revision-create-guard.json
+  --cleanup-disposition delete-after-proof
 ```
 
 ## Execution timing records
@@ -549,15 +585,18 @@ The schema-2 operation log is the timing authority. Every application,
 readback, cleanup, restore, and gate-verification entry records its operation,
 transaction and attempt identity, start/end timestamps, measured duration,
 outcome, gate progress, and evidence. Do not infer duration from file names,
-operation counts, or chat history.
+operation counts, or chat history. Every live command initializes or appends the
+log itself with `recordedBy: "TOOL"`; the agent must never create the empty log,
+append a row, repair a row, or backfill one from chat history. Standalone tools
+derive `<project>/evidence/readbacks/operation-log.json` from their resolved
+report path; plan tools use the plan-bound log. `--operation-log` is only an
+optional override.
 
 Generate a read-only summary when reporting progress or after a phase:
 
 ```bash
-node scripts/live/easyeda_execution_timing.mjs \
-  --operation-log <project>/evidence/readbacks/operation-log.json \
-  --task-started-at <ISO-8601-task-start> \
-  --output <project>/evidence/readbacks/execution-timing.json
+node <skill>/scripts/live/easyeda_execution_timing.mjs \
+  --task-started-at <ISO-8601-task-start>
 ```
 
 The report summarizes total elapsed time, measured step duration, attempts,
@@ -577,20 +616,17 @@ When the companion exposes no native-export API, a read-only UI export is
 allowed; it is not permission to mutate through the UI. Bind both artifacts:
 
 ```bash
-node scripts/live/easyeda_native_checkpoint.mjs create \
-  --native <project>/evidence/snapshots/pre-route.epro \
-  --readback <project>/evidence/readbacks/pre-route-pcb.json \
-  --output <project>/evidence/snapshots/pre-route-checkpoint.json
-node scripts/live/easyeda_native_checkpoint.mjs verify \
-  --manifest <project>/evidence/snapshots/pre-route-checkpoint.json \
-  --native <project>/evidence/snapshots/pre-route.epro \
-  --readback <project>/evidence/readbacks/pre-route-pcb.json \
-  --output <project>/evidence/readbacks/pre-route-checkpoint-check.json
-node scripts/live/easyeda_native_checkpoint.mjs verify-restore \
-  --manifest <project>/evidence/snapshots/pre-route-checkpoint.json \
-  --native <project>/evidence/snapshots/pre-route.epro \
-  --readback <project>/evidence/readbacks/restored-probe-pcb.json \
-  --output <project>/evidence/readbacks/pre-route-restore-check.json
+node <skill>/scripts/live/easyeda_native_checkpoint.mjs create \
+  --native evidence/snapshots/pre-route.epro \
+  --readback evidence/readbacks/pre-route-pcb.json
+node <skill>/scripts/live/easyeda_native_checkpoint.mjs verify \
+  --manifest evidence/snapshots/pre-route-checkpoint.json \
+  --native evidence/snapshots/pre-route.epro \
+  --readback evidence/readbacks/pre-route-pcb.json
+node <skill>/scripts/live/easyeda_native_checkpoint.mjs verify-restore \
+  --manifest evidence/snapshots/pre-route-checkpoint.json \
+  --native evidence/snapshots/pre-route.epro \
+  --readback evidence/readbacks/restored-probe-pcb.json
 ```
 
 `NATIVE_CHECKPOINT_MATCH` proves exact artifact and semantic-readback binding,
@@ -602,17 +638,25 @@ that restore check passes.
 
 ## Data-driven transactions
 
-Use schema-2 JSON plans and the common runner for route, repair, placement,
-outline, and copper work. Read
+Use schema-2 JSON plans and the governed runners for schematic component/wire
+writes and for PCB route, repair, placement, outline, and copper work. Read
 [tool-library.md](../api/tool-library.md) for the stable command catalog,
-operation registry, plan schema, control paths, rollback strategies, and exact
-verification contract. Never generate per-net or per-pass executables.
+operation registries, plan schemas, control paths, rollback strategies, and
+exact verification contracts. Never generate per-net, per-pass, or
+per-schematic-attempt executables.
 
 The runner appends the timed application entry and stops at
 `TRANSACTION_APPLIED_PENDING_REOPEN`. Save/switch/reopen, capture schema-2
 current state with repeated DRC, rerun placement containment, and require
 `TRANSACTION_VERIFIED`. `TRANSACTION_UNVERIFIED` or `TRANSACTION_REJECTED`
 stops expansion and invokes the declared cleanup or restore policy.
+
+The schematic runner similarly stops at
+`SCHEMATIC_TRANSACTION_APPLIED_PENDING_REOPEN`. Reopen with
+`inspect_schematic_state.mjs --with-drc` and require
+`SCHEMATIC_TRANSACTION_VERIFIED`; an unknown or rejected result invokes
+returned-ID cleanup for create-only work or the separately verified native
+restore for modification/deletion.
 
 ## Routing and copper canaries
 
@@ -717,7 +761,7 @@ Record the transaction's gate progression in
 `<project>/evidence/readbacks/gate-ledger.json` and its call history in
 `<project>/evidence/readbacks/operation-log.json`. The ledger makes a skipped gate
 detectable instead of merely discouraged; prose in chat or a summary table cannot
-close a gate.
+close a gate. Only live tools create or append the operation log.
 
 Ledger shape, validated by `easyeda_gate_ledger.mjs`:
 
@@ -745,11 +789,18 @@ every later gate requires it, and the baseline audit rejects a ledger whose
 
 Use `branch: "read-only-review"` when the user asked only for verification and you
 will write nothing. Its gates are `COMPANION_READY`, `ACTIVE_REVISION_BOUND`,
-`REVIEW_SCOPE_BOUND`, and `EVIDENCE_INVENTORY_COMPLETE`, and it requires no
-operation log because it performs no writes. Never label a read-only review as a
-repair or continuation branch to satisfy the lint; a ledger that claims a
-transaction you did not perform is false evidence, and marking a mutation
-branch's gates `NOT_APPLICABLE` to force a pass defeats the ledger's purpose.
+`REVIEW_SCOPE_BOUND`, `SCHEMATIC_DRC_CLEAR`, and
+`EVIDENCE_INVENTORY_COMPLETE`, and it requires no operation-log linkage in the
+ledger because it performs no writes. The DRC gate is required before any
+schematic-clear conclusion, including a schematic-only review that will never
+enter PCB work. The live commands used for that review still append their
+read-only invocations to the tool-managed log supplied on the command line.
+Never label a read-only review as a repair or continuation branch to satisfy the
+lint; a ledger that claims a transaction you did not perform is false evidence,
+and marking a mutation branch's gates `NOT_APPLICABLE` to force a pass defeats
+the ledger's purpose.
+
+`SCHEMATIC_DRC_CLEAR` cannot be `NOT_APPLICABLE` on any branch that owns it.
 
 `branch` is one of the five branches above. `scope` is `schematic-only`,
 `pcb-only`, or `end-to-end`. Gate `state` is `CLOSED`, `OPEN`, `BLOCKED`, or
@@ -819,6 +870,8 @@ Operation-log shape, append-only:
       "durationMs": 1250,
       "attemptDisposition": "ACCEPTED",
       "gateProgress": "CLOSED",
+      "recordedBy": "TOOL",
+      "tool": "easyeda_transaction.mjs",
       "evidence": ["route-gate-check.json"]
     }
   ]
@@ -830,21 +883,22 @@ Operation-log shape, append-only:
 `semanticReadback`, and a `UNKNOWN_TIMEOUT` entry needs the readback that
 resolved the unknown state. Entry ids must be unique: reusing an id, or replacing
 an earlier entry's conclusion in place, breaks the append-only contract and makes
-the log unusable as evidence. Append a corrected entry instead. Timestamps and
+the log unusable as evidence. Rerun the owning tool so it appends a corrected
+entry; never write the correction yourself. Timestamps and
 `durationMs` must agree; `attemptFamily` plus `attemptIndex` identifies one
 bounded hypothesis, while `transactionId` groups its API calls. Record
 `attemptDisposition` as `ACCEPTED`, `REJECTED`, `UNKNOWN`, or `READ_ONLY`, and
 `gateProgress` as `NO_CHANGE`, `CLOSED`, or `BLOCKED`. A schema-1 log remains
 historical evidence but cannot support reliable step-duration summaries.
+`recordedBy: "TOOL"` and a nonempty `tool` are mandatory. Treat an entry without
+that provenance as unverified; never make it pass by hand-editing the JSON.
 
 Run the lint after each gate transition and before any closure claim:
 
 ```bash
-node scripts/live/easyeda_gate_ledger.mjs \
-  --ledger <project>/evidence/readbacks/gate-ledger.json \
+node <skill>/scripts/live/easyeda_gate_ledger.mjs \
   --require-gate PCB_SYNC_MATCH \
-  --output <project>/evidence/readbacks/gate-ledger-check.json \
-  --markdown <project>/evidence/readbacks/gate-ledger-status.md
+  --markdown evidence/readbacks/gate-ledger-status.md
 ```
 
 Exit code `0` with `CLEARED` is required before advancing. Pass the cleared

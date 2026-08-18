@@ -6,7 +6,8 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { executeEasyedaCode, isMain, writeNewJson } from "./lib/tool_runtime.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { executeEasyedaCode, isMain, resolveOperationLogPath, timestampSlug, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, BLOCKED: 2, UNVERIFIED: 3 });
 const ROLES = new Set(["working", "rollback", "diagnostic", "final"]);
@@ -22,13 +23,16 @@ const CLEANUP = new Set([
   "delete-after-proof",
   "needs-user-decision",
 ]);
+const CLI_STARTED_AT = new Date();
+const DEFAULT_MANIFEST = "revision-manifest.json";
+const DEFAULT_OUTPUT = `evidence/readbacks/revision-guard-${timestampSlug(CLI_STARTED_AT)}.json`;
 
 function usage() {
   return `Usage:
-  node scripts/live/easyeda_revision_guard.mjs --manifest FILE [options]
+  node scripts/live/easyeda_revision_guard.mjs [--manifest FILE] [options]
 
 Options:
-  --manifest FILE                 Project revision-manifest.json
+  --manifest FILE                 Override revision-manifest.json
   --tree-file FILE                Offline document-tree JSON instead of bridge
   --intent-role ROLE              working|rollback|diagnostic|final
   --parent-uuid UUID              Parent PCB UUID for the proposed revision
@@ -37,7 +41,8 @@ Options:
   --cleanup-disposition VALUE     keep|delete-after-proof|needs-user-decision
   --bridge-port PORT              Use one bridge port
   --window-id ID                  Target a registered EasyEDA window
-  --output FILE                   Relative JSON output path under cwd
+  --output FILE                   Override the generated readback path
+  --operation-log FILE            Override the log path derived from --output
   --force                         Overwrite an existing output file
   --self-test                     Run deterministic offline tests
   --help                          Show this help
@@ -62,7 +67,7 @@ function positivePort(value) {
 
 function parseArgs(argv) {
   const options = {
-    manifest: undefined,
+    manifest: DEFAULT_MANIFEST,
     treeFile: undefined,
     intentRole: undefined,
     parentUuid: undefined,
@@ -71,7 +76,8 @@ function parseArgs(argv) {
     cleanupDisposition: undefined,
     bridgePort: undefined,
     windowId: undefined,
-    output: undefined,
+    output: DEFAULT_OUTPUT,
+    operationLog: undefined,
     force: false,
     selfTest: false,
     help: false,
@@ -108,6 +114,9 @@ function parseArgs(argv) {
     } else if (option === "--output") {
       options.output = requiredValue(argv, index, option);
       index += 1;
+    } else if (option === "--operation-log") {
+      options.operationLog = requiredValue(argv, index, option);
+      index += 1;
     } else if (option === "--force") {
       options.force = true;
     } else if (option === "--self-test") {
@@ -117,9 +126,6 @@ function parseArgs(argv) {
     } else {
       throw new Error(`unknown option: ${option}`);
     }
-  }
-  if (!options.help && !options.selfTest && !options.manifest) {
-    throw new Error("--manifest is required");
   }
   const intentValues = [
     options.intentRole,
@@ -404,6 +410,7 @@ async function readJsonInput(file) {
 }
 
 async function main() {
+  const startedAt = CLI_STARTED_AT;
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(usage());
@@ -445,9 +452,20 @@ async function main() {
     analysis,
   };
   const text = `${JSON.stringify(report, null, 2)}\n`;
-  if (options.output) {
-    await writeNewJson(options.output, report, { force: options.force });
-  }
+  const output = await writeNewJson(options.output, report, { force: options.force });
+  const endedAt = new Date();
+  await appendToolLogEntry(resolveOperationLogPath(options.operationLog, options.output), {
+    tool: "easyeda_revision_guard.mjs",
+    gate: "REVISION_BUDGET_CLEAR",
+    operation: "EasyEDA revision manifest and live document-tree guard",
+    outcome: "READ_ONLY",
+    semanticReadback: `${analysis.decision}; ${analysis.issues?.length || 0} issue(s)`,
+    startedAt,
+    endedAt,
+    attemptDisposition: analysis.decision === "ALLOWED" ? "ACCEPTED" : analysis.decision === "BLOCKED" ? "REJECTED" : "UNKNOWN",
+    gateProgress: analysis.decision === "ALLOWED" ? "CLOSED" : analysis.decision === "BLOCKED" ? "BLOCKED" : "NO_CHANGE",
+    evidence: [output],
+  });
   process.stdout.write(text);
   process.exitCode =
     analysis.decision === "ALLOWED"
@@ -458,7 +476,11 @@ async function main() {
 }
 
 if (isMain(import.meta.url)) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "easyeda_revision_guard.mjs", gate: "REVISION_BUDGET_CLEAR", startedAt: CLI_STARTED_AT, error,
+      defaultOutput: DEFAULT_OUTPUT,
+    }).catch(() => {});
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = EXIT.ERROR;
   });

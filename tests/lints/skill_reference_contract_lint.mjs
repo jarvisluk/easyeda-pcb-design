@@ -6,7 +6,7 @@
 // tokens no script recognizes) without starting an agent task.
 //
 // Checks:
-//   1. Every node/python3 scripts/... invocation in SKILL.md or references
+//   1. Every node/python3 [<skill>/]scripts/... invocation in SKILL.md or references
 //      names a script that exists.
 //   2. Every long option on such a command line is accepted by that script.
 //      Options are attributed per command, never per fenced block.
@@ -80,7 +80,7 @@ export const PROSE_ONLY_TOKENS = Object.freeze({
 });
 
 const TOKEN_RE = /`([A-Z][A-Z0-9_]{4,})`/g;
-const COMMAND_RE = /^\s*(?:node|python3)\s+(scripts\/[A-Za-z0-9_/-]+\.(?:mjs|py))\b(.*)$/;
+const COMMAND_RE = /^\s*(?:node|python3)\s+(?:<skill>\/)?(scripts\/[A-Za-z0-9_/-]+\.(?:mjs|py))\b(.*)$/;
 const LONG_OPTION_RE = /--[a-z][a-z0-9-]*/g;
 
 function walk(dir, out = []) {
@@ -276,6 +276,14 @@ function selfTest() {
     );
     const clear = analyze({ docs: [good], scripts, skillRoot: root, proseOnly: {} });
     assertEqual(clear.decision, "CLEARED", "valid command and implemented token should clear");
+
+    const installed = write(
+      "installed.md",
+      fence(["node <skill>/scripts/audits/real_audit.mjs --ground-net GND"]),
+    );
+    const installedReport = analyze({ docs: [installed], scripts, skillRoot: root, proseOnly: {} });
+    assertEqual(installedReport.decision, "CLEARED", "installed-skill placeholder command should clear");
+    assertEqual(installedReport.counts.commands, 1, "installed-skill placeholder command must be counted");
 
     const stale = write("stale.md", fence(["node scripts/audits/real_audit.mjs --nope VALUE"]));
     const staleReport = analyze({ docs: [stale], scripts, skillRoot: root, proseOnly: {} });

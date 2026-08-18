@@ -1,5 +1,9 @@
+# macOS Finder metadata.
+.DS_Store
+
 # Local PCB test designs and generated process evidence.
 /designs/
+/evidence/
 
 # Legacy root-level audit artifacts; keep regenerated copies local.
 /stm32f103-*-audit.json

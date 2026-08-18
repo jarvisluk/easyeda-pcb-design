@@ -85,9 +85,10 @@ Never replay a timed-out or void-returning write without that readback. A blind
 retry after a timeout is how duplicate components and duplicate primitives
 appear. A duplicate created this way is committed geometry, so removing it is an
 existing-board repair transaction with that branch's evidence requirements, not
-a free correction. Record every attempt, its outcome, and its readback in the
-append-only operation log defined in
-[live-build-gates.md](../workflows/live-build-gates.md), using outcome
+a free correction. The owning live tool records every attempt, outcome, and
+readback in the append-only operation log defined in
+[live-build-gates.md](../workflows/live-build-gates.md); agents never write log
+entries. The tool uses outcome
 `UNKNOWN_TIMEOUT` for a timeout and `COMMITTED_THEN_THREW` for a throwing
 commit.
 
@@ -219,6 +220,14 @@ clearance, connection, or free-copper error remains a failure.
 - `SCH_PrimitiveNetLabel`, `SCH_PrimitivePowerPort`, and related net symbols.
 - `SCH_Drc` — schematic DRC.
 - `SCH_Document` — save/view operations.
+
+For supported component/wire create, modify, and delete, use schema-2
+`easyeda_schematic_transaction.mjs` plans. Do not call these mutators from a
+one-off browser script. Capture saved/reopened before/after state with
+`inspect_schematic_state.mjs --with-drc` and require
+`SCHEMATIC_TRANSACTION_VERIFIED` from `verify_schematic_gate.mjs`. Unknown or
+unsupported schematic mutation is a tools-library gap, not permission to
+hand-write an API sequence.
 
 Schematic coordinates use 10 mil per unit. Read the exact symbol/component creation signature and verify `{libraryUuid, uuid}` identifiers.
 

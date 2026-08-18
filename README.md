@@ -134,12 +134,13 @@ Two gates shape the lifecycle:
 Any write to EasyEDA additionally loads [`live-build-gates.md`](skills/easyeda-pcb-design/references/workflows/live-build-gates.md) and [`api-map.md`](skills/easyeda-pcb-design/references/api/api-map.md), then runs:
 
 ```bash
-node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
+cd designs/<board-slug>
+node ../../skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 ```
 
 Work may continue only when the command exits with code `0` and reports `ready: true`. Project and document UUIDs are bound before writes. Every operation is awaited, and semantic readback from the saved and reopened design is authoritative.
 
-Production routing and destructive repair additionally require a schema-2 timed operation log, a schema-3 placement report proving native board-material containment, and a native `.epro` checkpoint proven by a separate probe restore. Elapsed time is reported but never controls execution. The [live tools library](skills/easyeda-pcb-design/references/api/tool-library.md) exposes ten stable commands; route, repair, placement, outline, and copper differences are schema-2 JSON plans executed by one shared transaction engine. A gate advances only after saved/reopened current-state, exact-delta/residue checks, post-placement containment, and repeated detailed-DRC verification.
+Production routing and destructive repair additionally require a schema-2 timed operation log, a schema-3 placement report proving native board-material containment, and a native `.epro` checkpoint proven by a separate probe restore. Every live command selects its own project-local report path and appends its own tool-attributed log entry; `--output` and `--operation-log` are optional overrides. Transaction plans derive before/after/result/verification paths from `transactionId`. Agents never hand-write logs. Elapsed time is reported but never controls execution. The [live tools library](skills/easyeda-pcb-design/references/api/tool-library.md) exposes fourteen stable commands: schema-2 runners cover schematic component/wire writes plus PCB route, repair, placement, outline, and copper. A gate advances only after saved/reopened current-state, exact-delta/residue and identity checks, applicable containment, and repeated ERC/DRC verification.
 
 Authorization profile and transaction type are separate routing dimensions:
 
@@ -221,6 +222,9 @@ In addition to schematic, PCB, DRC, and manufacturing outputs, the review requir
 ├── README.md                     # Primary English overview and routing guide
 ├── README.zh-CN.md               # 中文说明
 ├── AGENTS.md                     # Repository development and maintenance rules
+├── .github/workflows/validate.yml # Full validation in CI
+├── tests/                         # Repository-only regression and manual eval fixtures
+├── tools/validate_repo.mjs        # One-command repository validation
 └── skills/easyeda-pcb-design/    # Complete, independently installable skill
     ├── SKILL.md                  # Decision and routing entry point
     ├── agents/openai.yaml        # Agent display metadata and default prompt
@@ -236,13 +240,17 @@ In addition to schematic, PCB, DRC, and manufacturing outputs, the review requir
         ├── calc/                 # Analytical calculators and tests
         ├── lib/                  # Shared audit helpers and geometry utilities
         ├── lints/                # Baseline, component, constraint, and stackup lints
-        ├── live/                 # Companion, identity, revision, snapshot, and gate-ledger checks
-        └── tests/                # Cross-script regression suite
+        └── live/                 # Companion, identity, revision, snapshot, and gate-ledger checks
 ```
 
 `skills/easyeda-pcb-design/` is the installation boundary. Repository-level files and local `designs/` projects are not part of the skill and must not be copied into an installation.
 
 ## Maintenance principles
+
+Run `node tools/validate_repo.mjs` for the complete repository validation, or
+add `--quick` after a documentation-only change. Routing forward evaluations
+remain manual: the unified command validates their fixtures but does not start
+an agent or score its reply.
 
 - Keep `SKILL.md` focused on routing, boundaries, formal output contracts, and regression commands; keep detailed rules in directly linked references.
 - Give each rule one authoritative home. This README explains the model instead of duplicating implementation semantics.

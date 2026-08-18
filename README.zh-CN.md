@@ -134,12 +134,13 @@ flowchart TD
 只要要写入 EasyEDA，就额外加载 [`live-build-gates.md`](skills/easyeda-pcb-design/references/workflows/live-build-gates.md) 与 [`api-map.md`](skills/easyeda-pcb-design/references/api/api-map.md)，并先运行：
 
 ```bash
-node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
+cd designs/<board-slug>
+node ../../skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 ```
 
 只有退出码为 `0` 且结果包含 `ready: true` 才能继续。写入前绑定工程和文档 UUID；每个操作都要等待完成，并以保存、重新打开后的语义回读为准。
 
-生产布线与破坏性修复还必须具备 schema-2 带时间戳操作日志、证明原生板材边界包含关系的 schema-3 布局报告，以及通过独立探针恢复验证的原生 `.epro` 检查点。耗时只记录和汇总，不控制是否继续执行。[实时 tools 库](skills/easyeda-pcb-design/references/api/tool-library.md)只暴露 10 个稳定命令；布线、修复、布局、板框和铜皮差异都写成 schema-2 JSON，由同一个事务引擎执行。只有保存重开后的当前状态、精确 delta/residue、更新后的 containment 和重复详细 DRC 均验证通过，才能推进 gate。
+生产布线与破坏性修复还必须具备 schema-2 带时间戳操作日志、证明原生板材边界包含关系的 schema-3 布局报告，以及通过独立探针恢复验证的原生 `.epro` 检查点。每个实时命令都必须自行选择工程内报告路径并追加带工具归属的日志；`--output` 与 `--operation-log` 只用于可选覆盖。事务 plan 根据 `transactionId` 推导 before、after、result 和 verification 路径，Agent 绝不手写日志。耗时只记录和汇总，不控制是否继续执行。[实时 tools 库](skills/easyeda-pcb-design/references/api/tool-library.md)暴露 14 个稳定命令：schema-2 事务工具覆盖原理图元件/导线写入，以及 PCB 布线、修复、布局、板框和铜皮。只有保存重开后的当前状态、精确 delta/residue 与身份校验、适用的 containment 和重复 ERC/DRC 均验证通过，才能推进 gate。
 
 授权档案和 transaction 是两个不同维度：
 
@@ -221,6 +222,9 @@ node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
 ├── README.md                     # 英文主入口和路由说明
 ├── README.zh-CN.md               # 中文说明
 ├── AGENTS.md                     # 仓库开发与维护规则
+├── .github/workflows/validate.yml # CI 完整验证
+├── tests/                         # 仓库级回归与手工 eval fixtures
+├── tools/validate_repo.mjs        # 一条命令完成仓库验证
 └── skills/easyeda-pcb-design/    # 完整、可独立安装的 skill
     ├── SKILL.md                  # 决策与路由入口
     ├── agents/openai.yaml        # Agent 展示信息和默认提示
@@ -236,13 +240,16 @@ node skills/easyeda-pcb-design/scripts/live/check_companion.mjs
         ├── calc/                 # 分析计算器及其测试
         ├── lib/                  # 共享审计工具和几何工具
         ├── lints/                # baseline、器件、约束和叠层 lint
-        ├── live/                 # companion、身份、revision、快照和 gate-ledger 检查
-        └── tests/                # 跨脚本回归套件
+        └── live/                 # companion、身份、revision、快照和 gate-ledger 检查
 ```
 
 `skills/easyeda-pcb-design/` 是安装边界。仓库级文件和本地 `designs/` 工程不属于 skill，不应一起安装。
 
 ## 维护原则
+
+运行 `node tools/validate_repo.mjs` 执行完整仓库验证；只改文档时可加
+`--quick`。routing forward eval 仍需人工执行和判断：统一命令只验证其
+fixture，不会启动 Agent 或自动评分。
 
 - `SKILL.md` 只保留路由、边界、正式输出契约和回归命令；细则放在直接链接的 reference 中。
 - 每条规则只保留一个权威位置，README 负责解释模型，不复制实现语义。

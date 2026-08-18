@@ -2410,6 +2410,7 @@ function analyzeSchematicPlacement(raw = {}, pageEnvelopeRecord = null) {
 }
 
 function analyzeSchematic(raw, source, options = {}) {
+  const drcEvidenceAvailable = typeof raw.drc === "boolean" || Array.isArray(raw.drc);
   const drc = summarizeDrc(raw.drc);
   const designators = designatorIssues(raw.components || []);
   const missingFootprints = (raw.components || [])
@@ -2420,7 +2421,7 @@ function analyzeSchematic(raw, source, options = {}) {
       name: component.name,
     }));
   const failures = [];
-  if (!drc.passed) failures.push("schematic DRC did not pass");
+  if (drcEvidenceAvailable && !drc.passed) failures.push("schematic DRC did not pass");
   if (designators.missing.length) failures.push("one or more components lack designators");
   if (designators.duplicates.length) failures.push("duplicate component designators exist");
   if (missingFootprints.length) {
@@ -2456,6 +2457,11 @@ function analyzeSchematic(raw, source, options = {}) {
     );
   }
   const unverified = [...componentSelectionEvidence.unverified];
+  if (!drcEvidenceAvailable) {
+    unverified.push(
+      "current schematic DRC evidence is missing; the schematic cannot be called clear or verified",
+    );
+  }
   if (!presentation.available) {
     unverified.push(
       "schematic presentation geometry is unavailable for readability screening",
@@ -2505,7 +2511,7 @@ function analyzeSchematic(raw, source, options = {}) {
       "gateSequence",
     ],
     checkedAxes: [
-      "schematicDrc",
+      ...(drcEvidenceAvailable ? ["schematicDrc"] : []),
       "identityAndFootprints",
       "componentSelection",
       "presentationGeometry",
@@ -2513,6 +2519,7 @@ function analyzeSchematic(raw, source, options = {}) {
       "gateSequence",
     ],
     unverifiedAxes: [
+      ...(!drcEvidenceAvailable ? ["schematicDrc"] : []),
       ...(!componentSelectionEvidence.cleared ? ["componentSelection"] : []),
       ...(!presentation.available || presentation.requiresVisualReview
         ? ["presentationGeometry"]

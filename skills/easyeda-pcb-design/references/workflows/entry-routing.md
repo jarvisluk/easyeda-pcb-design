@@ -35,9 +35,9 @@ split the task into continuation and repair transactions with separate gates.
 Choose one scope before planning or live work:
 
 - **Schematic only** covers requirements, architecture, schematic creation or
-  modification, parts and footprint binding, ERC, targeted schematic checks,
-  and handoff readiness. Stop before PCB creation, synchronization, placement,
-  routing, copper, or manufacturing review.
+  modification, parts and footprint binding, schematic DRC/ERC, targeted
+  schematic checks, and handoff readiness. Stop before PCB creation,
+  synchronization, placement, routing, copper, or manufacturing review.
 - **PCB only** starts from an existing schematic and handoff record or from an
   existing PCB bound to that handoff. It covers synchronization, constraint
   closure, placement, routing, copper, DRC, mechanics, and any explicitly
@@ -236,7 +236,8 @@ revision and invalidates this report plus dependent schematic/PCB evidence.
 
 Before live API work, select the live gate branch in
 [live-build-gates.md](live-build-gates.md), run
-`node scripts/live/check_companion.mjs`, and require `ready: true`.
+`node <skill>/scripts/live/check_companion.mjs` from `<project>`, and require
+`ready: true`. It writes its report under `evidence/readbacks/` by default.
 
 Use the live branch that matches the transaction:
 
@@ -246,7 +247,7 @@ Use the live branch that matches the transaction:
 - **Existing-schematic modification** for bounded changes to an existing
   schematic. Bind its exact revision, capture pre-edit semantics, preserve
   operation-appropriate rollback evidence, verify the intended delta after
-  save/reopen, rerun ERC, and invalidate any older handoff.
+  save/reopen, rerun schematic DRC/ERC, and invalidate any older handoff.
 - **Existing-board continuation** for adding missing placement, routing, vias,
   or copper to an unfinished PCB without replacing already-committed geometry.
   Bind the exact revision, require current handoff/netlist synchronization or
@@ -263,15 +264,17 @@ Do not treat a read-only existing-schematic review as a mutation branch.
 
 ## Close the schematic-to-PCB handoff
 
-Close this gate before production PCB creation, placement, or routing. Bind the
-handoff to the saved/reopened schematic page UUID and revision evidence, and
-record:
+Close this gate before production PCB creation, synchronization, placement, or
+routing. Bind the handoff to the saved/reopened schematic page UUID and revision
+evidence, and record:
 
 - the requirements baseline revision/fingerprint, its cleared lint report, and
   every unresolved assumption;
 - the primary-function selection summary, user/delegation disposition, and
   every intentionally omitted core-part capability;
-- the verified schematic/netlist identity and ERC result;
+- the verified schematic/netlist identity and the `SCHEMATIC_DRC_CLEAR` report:
+  three stable strict `SCH_Drc.check` samples from the saved/reopened page, zero
+  error groups, and an explicit disposition for every warning;
 - the schematic presentation-screen result and exact-page visual conclusion,
   including any intentional connector-map or cross-sheet labeling exception;
 - the schematic symbol-placement result and the page-envelope record with its
@@ -299,6 +302,10 @@ PCB-included part, all required suitability checks pass, and every part has an
 exact, qualified custom, or explicitly approved substitute library binding.
 No required parameter aspect may be missing, and no consequential parameter may
 remain unclassified or hidden only in prose.
+It also requires `SCHEMATIC_DRC_CLEAR` on the same page UUID and revision; a
+missing, stale, unstable, non-array, or nonzero-error schematic DRC result blocks
+PCB creation and synchronization. A clean PCB DRC cannot substitute for this
+upstream gate.
 Other missing information must be resolved or explicitly accepted as a
 downstream assumption that does not block PCB architecture. A missing,
 inaccessible, unreadable, stale, or variant-mismatched governing source, a

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import path from "node:path";
+
 import { collectorCode } from "../audits/easyeda_design_audit.mjs";
 import {
   designFingerprint,
@@ -9,23 +11,38 @@ import {
   cliFailure,
   executeEasyedaCode,
   isMain,
+  readJsonFile,
+  resolveArtifactRoot,
+  resolveContainedPath,
+  resolveOperationLogPath,
+  timestampSlug,
+  writeContainedJson,
   writeNewJson,
 } from "./lib/tool_runtime.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { validateTransactionPlan } from "./lib/transaction_plan.mjs";
+
+const CLI_STARTED_AT = new Date();
+const DEFAULT_OUTPUT = `evidence/readbacks/pcb-state-${timestampSlug(CLI_STARTED_AT)}.json`;
 
 function usage() {
   return `Usage:
-  node scripts/live/inspect_current_state.mjs --output FILE [options]
+  node scripts/live/inspect_current_state.mjs [--plan FILE --stage before|after] [options]
 
 Options:
   --with-drc           Include the formal repeated native DRC sequence.
+  --plan FILE          Bind output to a transaction plan.
+  --stage VALUE        Write the plan's before or after state path.
+  --output FILE        Override the generated or plan-bound output path.
   --bridge-port PORT   Use one bridge port instead of discovery.
   --window-id ID       Required when multiple EasyEDA windows are connected.
+  --operation-log FILE Override the tool-managed log path derived from --output.
   --self-test          Run deterministic summary checks.
 `;
 }
 
 function parseArgs(argv) {
-  const options = { output: null, withDrc: false, bridgePort: null, windowId: null, selfTest: false };
+  const options = { output: null, plan: null, stage: null, operationLog: null, withDrc: false, bridgePort: null, windowId: null, selfTest: false };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     const next = () => {
@@ -34,6 +51,9 @@ function parseArgs(argv) {
       return argv[index];
     };
     if (option === "--output") options.output = next();
+    else if (option === "--plan") options.plan = next();
+    else if (option === "--stage") options.stage = next();
+    else if (option === "--operation-log") options.operationLog = next();
     else if (option === "--with-drc") options.withDrc = true;
     else if (option === "--bridge-port") options.bridgePort = Number(next());
     else if (option === "--window-id") options.windowId = next();
@@ -43,7 +63,10 @@ function parseArgs(argv) {
       process.exit(0);
     } else throw new Error(`unknown option: ${option}`);
   }
-  if (!options.selfTest && !options.output) throw new Error("--output is required");
+  if (options.plan && !["before", "after"].includes(options.stage)) {
+    throw new Error("--plan requires --stage before or --stage after");
+  }
+  if (options.stage && !options.plan) throw new Error("--stage requires --plan");
   return options;
 }
 
@@ -143,9 +166,23 @@ function selfTest() {
 }
 
 async function main() {
+  const startedAt = CLI_STARTED_AT;
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return selfTest();
+    let artifactRoot = null;
+    let outputRelative = options.output || DEFAULT_OUTPUT;
+    let operationLogPath = resolveOperationLogPath(options.operationLog, outputRelative);
+    if (options.plan) {
+      const planPath = path.resolve(options.plan);
+      const validation = validateTransactionPlan(await readJsonFile(planPath, "transaction plan"));
+      if (!validation.executable) throw new Error([...validation.errors, ...validation.warnings].join("; "));
+      artifactRoot = resolveArtifactRoot(planPath, validation.plan.artifactRoot);
+      outputRelative = options.output || validation.plan.controls[
+        options.stage === "before" ? "preEditState" : "postEditState"
+      ];
+      operationLogPath = resolveContainedPath(artifactRoot, validation.plan.controls.operationLog, "operation log");
+    }
     const { response } = await executeEasyedaCode({
       code: collectorCode({ includeDrc: options.withDrc }),
       bridgePort: options.bridgePort,
@@ -153,13 +190,32 @@ async function main() {
     });
     if (!response.success) throw new Error(response.error || "EasyEDA current-state readback failed");
     const result = summarizeCurrentState(response.result, options.withDrc);
-    const output = await writeNewJson(options.output, result);
+    const output = artifactRoot
+      ? await writeContainedJson(artifactRoot, outputRelative, result)
+      : await writeNewJson(outputRelative, result);
+    const endedAt = new Date();
+    await appendToolLogEntry(operationLogPath, {
+      tool: "inspect_current_state.mjs",
+      gate: options.withDrc ? "SAVED_REOPENED_STATE_CAPTURED" : "PREFLIGHT_STATE_CAPTURED",
+      operation: options.withDrc ? "saved/reopened PCB state and repeated DRC capture" : "fast PCB current-state preflight",
+      outcome: "READ_ONLY",
+      semanticReadback: `${result.status}; fingerprint ${result.fingerprint}; DRC ${result.axes.drc.status}`,
+      startedAt,
+      endedAt,
+      attemptDisposition: "ACCEPTED",
+      gateProgress: options.withDrc ? "CLOSED" : "NO_CHANGE",
+      evidence: [output],
+    });
     process.stdout.write(`${JSON.stringify({ status: result.status, fingerprint: result.fingerprint, output })}\n`);
   } catch (error) {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "inspect_current_state.mjs", gate: "CURRENT_STATE_CAPTURE", startedAt, error,
+      defaultOutput: DEFAULT_OUTPUT,
+    }).catch(() => {});
     cliFailure(error, "easyeda-current-state");
   }
 }
 
 if (isMain(import.meta.url)) await main();
 
-export { parseArgs, summarizeCurrentState };
+export { DEFAULT_OUTPUT, parseArgs, summarizeCurrentState };

@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { collectorCode } from "../../audits/easyeda_design_audit.mjs";
@@ -19,8 +18,10 @@ import {
   readJsonFile,
   resolveArtifactRoot,
   resolveContainedPath,
+  withTransactionControlDefaults,
   writeContainedJson,
 } from "./tool_runtime.mjs";
+import { appendToolLogEntry, loadOperationLog } from "./operation_log.mjs";
 
 const PLACEMENT_REQUIRED_AXES = Object.freeze([
   "boardMechanicalContainment",
@@ -34,7 +35,7 @@ const PRE_PLACEMENT_MODES = new Set(["route", "repair", "copper"]);
 
 function usage() {
   return `Usage:
-  node scripts/live/easyeda_transaction.mjs --plan FILE --output FILE [options]
+  node scripts/live/easyeda_transaction.mjs --plan FILE [--output FILE] [options]
 
 Options:
   --execute             Apply the validated transaction. Default is dry-run.
@@ -70,7 +71,6 @@ function parseArgs(argv) {
   }
   if (!options.selfTest) {
     if (!options.plan) throw new Error("--plan is required");
-    if (!options.output) throw new Error("--output is required");
   }
   if (options.bridgePort !== null && (!Number.isInteger(options.bridgePort) || options.bridgePort < 1 || options.bridgePort > 65535)) {
     throw new Error("--bridge-port must be an integer from 1 to 65535");
@@ -83,11 +83,12 @@ async function loadControlRecords(plan, artifactRoot) {
     resolveContainedPath(artifactRoot, plan.controls[field], label),
     label,
   );
+  const operationLogPath = resolveContainedPath(artifactRoot, plan.controls.operationLog, "operation log");
   const [checkpoint, authorization, ledger, operationLog, prePlacement] = await Promise.all([
     load("checkpointCheck", "checkpoint check"),
     load("authorizationRecord", "authorization record"),
     load("gateLedgerCheck", "gate ledger check"),
-    load("operationLog", "operation log"),
+    loadOperationLog(operationLogPath),
     PRE_PLACEMENT_MODES.has(plan.mode)
       ? load("prePlacementReport", "pre-transaction placement report")
       : Promise.resolve(null),
@@ -150,12 +151,6 @@ function analyzeControlRecords(plan, records) {
   return { cleared: reasons.length === 0, reasons, ...records };
 }
 
-async function appendOperationEntry(file, log, entry) {
-  if (log.entries.some((item) => item.id === entry.id)) throw new Error(`operation log already contains entry id ${entry.id}`);
-  const updated = { ...log, entries: [...log.entries, entry] };
-  await writeFile(file, `${JSON.stringify(updated, null, 2)}\n`);
-}
-
 function dryRunResult(validation, controls = null) {
   let code = null;
   if (validation.executable) code = browserTransactionCode(validation.plan);
@@ -215,7 +210,7 @@ function operationFixtures(mode) {
 function planFixture(mode = "route") {
   const operations = operationFixtures(mode);
   const destructive = !["route", "outline"].includes(mode);
-  return {
+  return withTransactionControlDefaults({
     schemaVersion: 2,
     kind: "easyeda-transaction-plan",
     mode,
@@ -244,7 +239,7 @@ function planFixture(mode = "route") {
       postPlacementReport: "evidence/audits/placement-after.json",
       operationLog: "evidence/readbacks/operation-log.json",
     },
-  };
+  }, "pcb");
 }
 
 function controlFixture(plan) {
@@ -268,10 +263,16 @@ function controlFixture(plan) {
 }
 
 function selfTest() {
+  if (parseArgs(["--plan", "plan.json"]).output !== null) {
+    throw new Error("transaction CLI did not keep --output optional");
+  }
   for (const mode of ["route", "repair", "placement", "outline", "copper"]) {
     const plan = planFixture(mode);
     const validation = validateTransactionPlan(plan);
     if (!validation.executable) throw new Error(`valid ${mode} plan failed: ${validation.errors.join("; ")}`);
+    if (!validation.plan.controls.transactionResult || !validation.plan.controls.verificationReport) {
+      throw new Error(`${mode} plan did not derive result and verification paths`);
+    }
     const controls = analyzeControlRecords(plan, controlFixture(plan));
     if (!controls.cleared) throw new Error(`valid ${mode} controls blocked: ${controls.reasons.join("; ")}`);
     if (!browserTransactionCode(plan).includes("operationResults")) throw new Error(`${mode} browser program was not generated`);
@@ -302,6 +303,7 @@ function selfTest() {
 }
 
 async function runTransactionCli(argv = process.argv.slice(2)) {
+  const toolStartedAt = new Date();
   const options = parseArgs(argv);
   if (options.selfTest) return selfTest();
   const planPath = path.resolve(options.plan);
@@ -310,7 +312,10 @@ async function runTransactionCli(argv = process.argv.slice(2)) {
   const artifactRoot = validation.plan?.artifactRoot
     ? resolveArtifactRoot(planPath, validation.plan.artifactRoot)
     : path.dirname(planPath);
-  const outputPath = resolveContainedPath(artifactRoot, options.output, "transaction output");
+  const outputRelative = options.output || validation.plan?.controls?.[
+    options.execute ? "transactionResult" : "planCheck"
+  ] || `evidence/readbacks/transaction-${options.execute ? "result" : "plan-check"}.json`;
+  const outputPath = resolveContainedPath(artifactRoot, outputRelative, "transaction output");
   if (existsSync(outputPath)) throw new Error(`transaction output already exists: ${outputPath}`);
   let controls = null;
   if (validation.executable) controls = await loadControlRecords(validation.plan, artifactRoot);
@@ -383,19 +388,85 @@ async function runTransactionCli(argv = process.argv.slice(2)) {
           status: "TRANSACTION_OUTCOME_UNKNOWN",
           nextAction: "Stop. Capture current state immediately; do not retry. Restore the verified checkpoint or prove the exact semantic outcome before another attempt.",
         };
-    await writeContainedJson(artifactRoot, options.output, result);
-    await appendOperationEntry(operationLogPath, controls.operationLog, operationEntry);
+    await writeContainedJson(artifactRoot, outputRelative, result);
+    await appendToolLogEntry(operationLogPath, {
+      ...operationEntry,
+      tool: "easyeda_transaction.mjs",
+      authorizationUserWords: controls.authorization.userWords,
+      evidence: [
+        outputPath,
+        resolveContainedPath(artifactRoot, plan.controls.authorizationRecord, "authorization record"),
+      ],
+    });
   }
   const output = outputPath;
-  if (!options.execute) await writeContainedJson(artifactRoot, options.output, result);
+  if (!options.execute) {
+    await writeContainedJson(artifactRoot, outputRelative, result);
+    const endedAt = new Date();
+    const plan = validation.plan;
+    await appendToolLogEntry(
+      resolveContainedPath(artifactRoot, plan.controls.operationLog, "operation log"),
+      {
+        tool: "easyeda_transaction.mjs",
+        transactionId: plan.transactionId,
+        gate: plan.gate,
+        attemptFamily: plan.attemptFamily,
+        attemptIndex: plan.attemptIndex,
+        operation: `${plan.mode} transaction plan validation`,
+        outcome: "READ_ONLY",
+        semanticReadback: `${result.status}; authorization recorded exactly as supplied by the bound authorization artifact`,
+        startedAt: toolStartedAt,
+        endedAt,
+        attemptDisposition: result.status === "PLAN_VALID" ? "ACCEPTED" : "REJECTED",
+        gateProgress: result.status === "PLAN_VALID" ? "NO_CHANGE" : "BLOCKED",
+        authorizationUserWords: controls?.authorization?.userWords || null,
+        evidence: [
+          outputPath,
+          resolveContainedPath(artifactRoot, plan.controls.authorizationRecord, "authorization record"),
+        ],
+      },
+    );
+  }
   process.stdout.write(`${JSON.stringify({ status: result.status, mode: validation.plan?.mode || null, output })}\n`);
   process.exitCode = ["PLAN_BLOCKED", "TRANSACTION_OUTCOME_UNKNOWN"].includes(result.status) ? 2 : 0;
+}
+
+async function appendPlanToolFailure(argv, error, startedAt, tool) {
+  try {
+    const planIndex = argv.indexOf("--plan");
+    if (planIndex < 0 || !argv[planIndex + 1]) return null;
+    const planPath = path.resolve(argv[planIndex + 1]);
+    const input = await readJsonFile(planPath, "transaction plan");
+    const plan = validateTransactionPlan(input).plan;
+    if (!plan?.artifactRoot || !plan?.controls?.operationLog) return null;
+    const artifactRoot = resolveArtifactRoot(planPath, plan.artifactRoot);
+    return appendToolLogEntry(
+      resolveContainedPath(artifactRoot, plan.controls.operationLog, "operation log"),
+      {
+        tool,
+        transactionId: plan.transactionId,
+        gate: plan.gate,
+        attemptFamily: plan.attemptFamily,
+        attemptIndex: plan.attemptIndex,
+        operation: `${tool} failed before producing an accepted report`,
+        outcome: "READ_ONLY",
+        semanticReadback: `tool error: ${error instanceof Error ? error.message : String(error)}`,
+        startedAt,
+        endedAt: new Date(),
+        attemptDisposition: "REJECTED",
+        gateProgress: "BLOCKED",
+        evidence: [],
+      },
+    );
+  } catch {
+    return null;
+  }
 }
 
 export {
   PLACEMENT_REQUIRED_AXES,
   analyzeControlRecords,
-  appendOperationEntry,
+  appendPlanToolFailure,
   dryRunResult,
   parseArgs,
   planFixture,

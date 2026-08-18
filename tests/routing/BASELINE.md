@@ -1,7 +1,7 @@
-# Routing forward-test baseline
+# Manual routing forward-eval baseline
 
-Recorded results of the routing-only forward tests, so a later run can be
-compared against known-good behavior instead of re-judged from scratch.
+Recorded results of the manual routing-only forward evaluations, so a later run
+can be compared against known-good behavior instead of re-judged from scratch.
 
 Run one case with:
 
@@ -19,13 +19,15 @@ Then compare the reply against the expectations the script prints.
 - antenna-module-selection
 - long-running-pcb-continuation
 - pcie-drc-order-readiness
+- schematic-review-requires-drc
 - What these cases do not cover
 
 ## How to read a result
 
-A case passes when the entry state, phase bounds, mode, and tier match, every
-`mustLoad` reference is named, no `mustNotLoad` reference is loaded, and every
-`mustState` item appears in substance. Wording may differ; the decision may not.
+A manually reviewed case passes when the entry state, phase bounds, mode, and
+tier match, every `mustLoad` reference is named, no `mustNotLoad` reference is
+loaded, and every `mustState` item appears in substance. Wording may differ; the
+decision may not.
 
 A `mustNotLoad` violation is a real failure even when the final answer is
 correct, because over-loading is how a baseline design silently acquires
@@ -107,16 +109,35 @@ It additionally flagged a 4-layer stackup for PCIe as needing its reference-plan
 and impedance strategy examined. That is a judgment call rather than a contract
 item, so it is not encoded as an expectation.
 
+## schematic-review-requires-drc
+
+Baseline: PASS, recorded 2026-08-17 against the repository skill revision.
+
+The fresh-context reply kept the task at phase 3 schematic-only review and
+explicitly excluded PCB placement, routing, copper, mechanics, manufacturing,
+and release conclusions. Although no PCB handoff was requested, it still
+required current `SCHEMATIC_DRC_CLEAR` evidence and concluded insufficient
+evidence rather than calling the schematic clear, verified, correct, or
+problem-free.
+
+It selected the exact next action: bind the saved/reopened schematic revision,
+run the three strict detailed DRC samples, require a stable result with zero
+error groups, and disposition every warning. It also preserved the complementary
+boundary that clean DRC is necessary but cannot waive identity, connectivity,
+part, footprint, presentation, or specialized schematic checks.
+
 ## What these cases do not cover
 
-All three cases are read-only routing probes. The continuation case exercises
-selection and explanation of the live gate contract, but none executes the
-ledger, snapshot, readback, or any write path. A change to live implementation
-semantics still needs deterministic integration coverage or a non-production
-probe.
+All four cases are manual, read-only routing probes. The harness validates their
+fixtures but neither starts an agent nor scores its reply. The continuation case
+exercises selection and explanation of the live gate contract, but none executes
+the ledger, snapshot, readback, or any write path. A change to live
+implementation semantics still needs deterministic integration coverage or a
+non-production probe.
 
-The antenna case is the only automated coverage of the `ORIENTATION_VIOLATION`,
-`ORIENTATION_CLEARED`, and `NOT_SUPPLIED` prose-only gates, and it proves only
-that the reference is loaded and orientation closure is named. It does not prove
-an agent would correctly execute the numbered-pad-to-board-edge check against a
-real footprint. Treat it as coverage of the routing rule, not of the geometry.
+The antenna case is the only repeatable manual evaluation of the
+`ORIENTATION_VIOLATION`, `ORIENTATION_CLEARED`, and `NOT_SUPPLIED` prose-only
+gates, and it proves only that the reference is loaded and orientation closure
+is named. It does not prove an agent would correctly execute the
+numbered-pad-to-board-edge check against a real footprint. Treat it as coverage
+of the routing rule, not of the geometry.

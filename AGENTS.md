@@ -63,6 +63,20 @@ Run from the repository root. These are repository maintenance commands; keep
 them out of the installable skill, which is consumed by agents designing boards
 rather than editing this skill.
 
+Run the complete repository validation with one command:
+
+```bash
+node tools/validate_repo.mjs
+```
+
+For a documentation-only edit, use `node tools/validate_repo.mjs --quick`.
+The unified runner performs skill-creator validation, the contract and
+deterministic suites below, relative-link, reference-Contents, and repository
+text-whitespace checks, routing fixture validation, and `git diff --check`. CI
+runs the same full suite with `--ci`; only the externally installed skill-creator
+validator may be unavailable there. The expanded commands below remain the
+authoritative diagnostic list.
+
 Start with the contract lint. It is the cheap tier: it proves prose and scripts
 still agree without starting an agent task, so it is the only command required
 after a documentation-only edit.
@@ -104,15 +118,20 @@ node skills/easyeda-pcb-design/scripts/live/easyeda_native_checkpoint.mjs --self
 node skills/easyeda-pcb-design/scripts/live/inspect_current_state.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/easyeda_transaction.mjs --self-test
 node skills/easyeda-pcb-design/scripts/live/verify_gate.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/inspect_schematic_state.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_schematic_checkpoint.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/easyeda_schematic_transaction.mjs --self-test
+node skills/easyeda-pcb-design/scripts/live/verify_schematic_gate.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_placement_audit.mjs --self-test
 node skills/easyeda-pcb-design/scripts/audits/easyeda_crystal_clock_audit.mjs --self-test
 python3 skills/easyeda-pcb-design/scripts/lints/easyeda_stackup_decision_lint.py --self-test
 python3 skills/easyeda-pcb-design/scripts/lints/easyeda_constraint_lint.py --self-test
 python3 skills/easyeda-pcb-design/scripts/audits/easyeda_manufacturing_audit.py --self-test
-node skills/easyeda-pcb-design/scripts/live/check_companion.mjs || true
+node skills/easyeda-pcb-design/scripts/live/check_companion.mjs --self-test
 ```
 
-Routing forward tests cover the behavioral surface no deterministic test reaches:
+Manual routing forward evaluations cover the behavioral surface no deterministic
+test reaches:
 entry-state classification, scope bounds, mode, technical-depth tier, and which
 references get loaded. Run the affected cases after editing the entrypoint's
 routing tables, tier triggers, or reference list.
@@ -130,9 +149,10 @@ so a harness that fed them to the agent would prove nothing. Recorded pass
 baselines and what they deliberately do not cover are in
 `tests/routing/BASELINE.md`.
 
-The antenna case is the only automated coverage of the prose-only gates the
-contract lint reports, so keep it in the affected set whenever antenna or
-primary-function routing changes.
+The antenna case is the only repeatable behavioral evaluation of the prose-only
+gates the contract lint reports. The harness validates the fixture but does not
+start an agent or score its reply, so run and review the case manually whenever
+antenna or primary-function routing changes.
 
 ## PCB test and process files
 

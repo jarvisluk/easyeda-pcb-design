@@ -7,6 +7,7 @@ can understand the drawing.
 
 ## Contents
 
+- Define functional groups and boundaries
 - Preserve functional structure
 - Place symbols deliberately
 - Declare the drawable page area
@@ -14,11 +15,36 @@ can understand the drawing.
 - Run the gate
 - Close the gate
 
+## Define functional groups and boundaries
+
+- Partition the schematic by functional responsibility before placing symbols.
+  Choose groups from the design architecture, such as power entry/conversion,
+  controller or processing core, sensing/analog, clock, reset/boot, protection,
+  communication channels, debug, and external interfaces. These are examples,
+  not a fixed taxonomy.
+- Assign every symbol to one primary group and give each group one contiguous
+  page region. Use whitespace and a concise group title or boundary annotation
+  so the grouping is visible without tracing nets. Split a large group into
+  named subgroups instead of letting unrelated circuits share one region.
+- Group support parts with the circuit they serve. Keep local decoupling, bias,
+  termination, filtering, and protection beside their load or interface; do not
+  create a detached passive-components group merely because the parts share a
+  type. Keep power entry, conversion, sequencing, and distribution in a power
+  group while leaving each load's local decoupling with that load.
+- Define the boundary nets and signal directions for every group before drawing
+  cross-group connectivity. Carry each cross-group logical connection through a
+  consistently named net label, port, or bus at the group boundary. Do not run a
+  continuous wire from one group across another group or build shared wire
+  trunks that visually couple otherwise separate groups.
+- Keep continuous wires inside a group for local topology and short functional
+  chains. Labels at group boundaries must not replace the local circuit with a
+  label on every pin. If two nominal groups require a direct continuous local
+  chain to remain understandable, merge them into one group or document the
+  deliberate boundary exception instead of drawing an unexplained cross-page
+  wire.
+
 ## Preserve functional structure
 
-- Partition the page before placing parts. Arrange power entry and conversion,
-  protection, controller, reset/boot, clocks, analog, debug, connectors, and
-  external interfaces as recognizable blocks.
 - Prefer a consistent left-to-right or top-to-bottom signal and power flow.
 - Draw local functional chains with continuous wires. Examples include an
   input-protection-regulator path, connector-ESD-termination-controller path,
@@ -141,9 +167,11 @@ Before `SCHEMATIC_VERIFIED` or schematic handoff:
    coordinate spread are review evidence, not proof: the schematic BBox API is
    beta and includes attribute text.
 6. Inspect the full saved/reopened page visually at a useful zoom. Confirm
-   functional flow, local return intent, crossings, text, polarity, connector
-   direction, separation between unrelated blocks, and that no symbol or its
-   text sits outside the visible sheet.
+   functional flow, group titles or boundary annotations, group membership,
+   local return intent, crossings, text, polarity, connector direction,
+   separation between unrelated groups, absence of unexplained continuous
+   cross-group wires, and that no symbol or its text sits outside the visible
+   sheet.
 7. Compare the exported netlist and component identities with the pre-layout or
    intended connectivity record. Presentation repair must not silently change
    electrical intent. Repositioning a symbol must leave its connectivity intact;
@@ -162,6 +190,12 @@ not by suppressing an unexplained result.
 
 Close presentation only when:
 
+- every symbol belongs to a recognizable functional group, support parts remain
+  with the circuit they serve, and unrelated groups occupy visibly separate
+  page regions;
+- cross-group connectivity uses consistently named labels, ports, or buses at
+  group boundaries; continuous wires remain inside a group except for a
+  documented deliberate boundary exception;
 - each consequential local circuit can be followed without reconstructing it
   solely from repeated labels;
 - labels and ports express hierarchy or distribution rather than hide local

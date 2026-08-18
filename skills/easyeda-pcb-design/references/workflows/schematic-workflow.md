@@ -73,15 +73,24 @@ cleared.
     connector pinouts from the mating side.
 12. Add test points only where their loading, stub, access, and shorting risk are
     acceptable.
-13. Run ERC and the schematic presentation screen, including the symbol-placement
-    check against the declared page envelope, inspect every warning and
-    no-connect marker, visually review the saved/reopened exact page, and verify
-    schematic/netlist identity.
+13. Save, switch away, reopen the exact page, and run three strict schematic
+    DRC/ERC samples through `SCH_Drc.check`. Require identical detailed results,
+    zero error groups, and a recorded disposition for every warning and
+    no-connect marker. Then run the schematic presentation screen, including the
+    symbol-placement check against the declared page envelope, visually review
+    the exact page, and verify schematic/netlist identity.
 
 For live creation, close the schematic identity canary in
 [live-build-gates.md](live-build-gates.md) before expanding the component
-population. Stop after `SCHEMATIC_VERIFIED` when the selected scope is
-schematic-only.
+population. Encode component and wire writes in one bounded schema-2
+`easyeda-schematic-transaction-plan`, run
+`easyeda_schematic_transaction.mjs`, recapture the saved/reopened page with
+`inspect_schematic_state.mjs --with-drc`, and require
+`SCHEMATIC_TRANSACTION_VERIFIED` from `verify_schematic_gate.mjs`. Stop after
+`SCHEMATIC_VERIFIED` when the selected scope is schematic-only. This aggregate
+closure comes only after `SCHEMATIC_DRC_CLEAR`; never call the schematic clear,
+correct, verified, or problem-free from identity, netlist, presentation, or
+transaction-delta evidence alone.
 
 ## Modify an existing schematic
 
@@ -94,7 +103,9 @@ Apply one bounded logical change at a time, await it, save, switch away, reopen,
 and read back the result. Require untouched component identities and nets to
 remain stable, verify the intended delta, and rerun ERC and applicable targeted
 checks. Mark every previous handoff and downstream PCB synchronization result
-stale. Do not update an existing PCB unless the user expands the scope and the
+stale. Use the schema-2 schematic transaction toolchain; modification or
+deletion requires `SCHEMATIC_RESTORE_MATCH` from a separate native restore
+probe. Do not update an existing PCB unless the user expands the scope and the
 handoff is reclosed.
 
 ## Review an existing schematic
@@ -120,12 +131,22 @@ Review in this order:
 7. revision-bound component-selection evidence, applicable
    datasheet/reference-design conformance, and specialized circuit checks;
 8. symbol-to-pad and footprint evidence when handoff readiness is in scope;
-9. ERC results plus manual inspection of every warning or exception.
+9. saved/reopened schematic DRC/ERC results, including three stable strict
+   samples, zero error groups, and manual disposition of every warning or
+   exception.
 
 Do not replay construction steps or begin redrawing merely because a defect is
 found. Explain the finding, consequence, evidence, and smallest corrective
 action. If the user requested electrical-only review, state that footprint and
 handoff readiness were not established.
+
+A concluded schematic review requires current saved/reopened
+`SCHEMATIC_DRC_CLEAR` evidence even when PCB handoff is outside scope. If DRC was
+not run, is stale or unstable, returned an unexpected shape, or contains any
+non-warning error group, conclude insufficient evidence or blocked as
+applicable—never that the schematic has no problem. DRC clearance is necessary
+but does not waive identity, connectivity, part, footprint, presentation, or
+specialized checks.
 
 ## Verify parts and footprints
 
@@ -167,7 +188,7 @@ For schematic-only creation or modification, either:
 
 - close the handoff gate in [entry-routing.md](entry-routing.md) and state that the result
   is ready to enter PCB planning, not fabrication; component-selection evidence
-  and the presentation gate must be clear and bound to the exact saved/reopened
-  schematic revision; or
+  the presentation gate, and `SCHEMATIC_DRC_CLEAR` must be clear and bound to
+  the exact saved/reopened schematic revision; or
 - stop with the blocking handoff information, why it matters, and the concrete
   next action.

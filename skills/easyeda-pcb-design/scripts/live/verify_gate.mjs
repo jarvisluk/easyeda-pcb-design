@@ -4,7 +4,8 @@ import path from "node:path";
 
 import { summarizePcbDrcEvidence } from "../audits/easyeda_design_audit.mjs";
 import { notAFabricationReleaseMessage } from "../lib/audit_common.mjs";
-import { appendOperationEntry, PLACEMENT_REQUIRED_AXES, planFixture } from "./lib/transaction_runner.mjs";
+import { appendPlanToolFailure, PLACEMENT_REQUIRED_AXES, planFixture } from "./lib/transaction_runner.mjs";
+import { appendToolLogEntry } from "./lib/operation_log.mjs";
 import { COLLECTIONS, operationDefinition } from "./lib/operation_registry.mjs";
 import { validateTransactionPlan } from "./lib/transaction_plan.mjs";
 import {
@@ -18,9 +19,11 @@ import {
 
 function usage() {
   return `Usage:
-  node scripts/live/verify_gate.mjs --plan FILE --before FILE --after FILE \\
-    --transaction-result FILE --output FILE
+  node scripts/live/verify_gate.mjs --plan FILE [options]
   node scripts/live/verify_gate.mjs --self-test
+
+The plan supplies default before/after/result/report paths. Explicit path
+options remain available as overrides.
 
 The after-state must be schema-2 inspect_current_state.mjs --with-drc evidence
 from a saved/reopened PCB. The verifier proves exact IDs, normalized deltas,
@@ -48,11 +51,7 @@ function parseArgs(argv) {
       process.exit(0);
     } else throw new Error(`unknown option: ${option}`);
   }
-  if (!options.selfTest) {
-    for (const field of ["plan", "before", "after", "transactionResult", "output"]) {
-      if (!options[field]) throw new Error(`--${field.replace(/[A-Z]/g, (value) => `-${value.toLowerCase()}`)} is required`);
-    }
-  }
+  if (!options.selfTest && !options.plan) throw new Error("--plan is required");
   return options;
 }
 
@@ -286,6 +285,9 @@ function stateFixture(plan, after = false) {
 }
 
 function selfTest() {
+  if (parseArgs(["--plan", "plan.json"]).plan !== "plan.json") {
+    throw new Error("gate verifier did not accept plan-only invocation");
+  }
   for (const mode of ["route", "repair", "placement", "outline", "copper"]) {
     const plan = planFixture(mode);
     const before = stateFixture(plan, false);
@@ -321,6 +323,7 @@ function selfTest() {
 }
 
 async function main() {
+  const startedAt = new Date();
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.selfTest) return selfTest();
@@ -331,23 +334,26 @@ async function main() {
     if (!validation.executable) throw new Error([...validation.errors, ...validation.warnings].join("; "));
     const plan = validation.plan;
     const artifactRoot = resolveArtifactRoot(planPath, plan.artifactRoot);
+    const beforeRelative = options.before || plan.controls.preEditState;
+    const afterRelative = options.after || plan.controls.postEditState;
+    const transactionResultRelative = options.transactionResult || plan.controls.transactionResult;
+    const outputRelative = options.output || plan.controls.verificationReport;
     const loadControl = (field, label) => readJsonFile(resolveContainedPath(artifactRoot, plan.controls[field], label), label);
-    const [before, after, transactionResult, checkpoint, ledger, postPlacement, operationLog] = await Promise.all([
-      readJsonFile(resolveContainedPath(artifactRoot, options.before, "before state"), "before state"),
-      readJsonFile(resolveContainedPath(artifactRoot, options.after, "after state"), "after state"),
-      readJsonFile(resolveContainedPath(artifactRoot, options.transactionResult, "transaction result"), "transaction result"),
+    const [before, after, transactionResult, checkpoint, ledger, postPlacement] = await Promise.all([
+      readJsonFile(resolveContainedPath(artifactRoot, beforeRelative, "before state"), "before state"),
+      readJsonFile(resolveContainedPath(artifactRoot, afterRelative, "after state"), "after state"),
+      readJsonFile(resolveContainedPath(artifactRoot, transactionResultRelative, "transaction result"), "transaction result"),
       loadControl("checkpointCheck", "checkpoint check"),
       loadControl("gateLedgerCheck", "gate ledger check"),
       loadControl("postPlacementReport", "post-transaction placement report"),
-      loadControl("operationLog", "operation log"),
     ]);
     const result = analyzeGateVerification({ plan, before, after, transactionResult, checkpoint, ledger, postPlacement });
-    const output = await writeContainedJson(artifactRoot, options.output, result);
+    const output = await writeContainedJson(artifactRoot, outputRelative, result);
     const verifiedAt = new Date();
-    await appendOperationEntry(
+    await appendToolLogEntry(
       resolveContainedPath(artifactRoot, plan.controls.operationLog, "operation log"),
-      operationLog,
       {
+        tool: "verify_gate.mjs",
         id: `${plan.transactionId}-verify-${verifiedAt.getTime()}`,
         transactionId: plan.transactionId,
         gate: plan.gate,
@@ -367,6 +373,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ status: result.status, mode: result.mode, output })}\n`);
     process.exitCode = result.status === "TRANSACTION_VERIFIED" ? 0 : 2;
   } catch (error) {
+    await appendPlanToolFailure(process.argv.slice(2), error, startedAt, "verify_gate.mjs");
     cliFailure(error, "easyeda-transaction-gate-verification");
   }
 }

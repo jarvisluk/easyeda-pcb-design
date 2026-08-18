@@ -13,10 +13,13 @@ import {
   identityContractIssues,
   summarizeNativeComparison,
 } from "../audits/easyeda_netlist_compare.mjs";
-import { executeEasyedaCode, isMain, writeNewJson } from "./lib/tool_runtime.mjs";
+import { appendToolFailureFromArgv, appendToolLogEntry } from "./lib/operation_log.mjs";
+import { executeEasyedaCode, isMain, resolveOperationLogPath, writeNewJson } from "./lib/tool_runtime.mjs";
 
 const EXIT = Object.freeze({ OK: 0, ERROR: 1, MISMATCH: 2, UNVERIFIED: 3 });
 const DOCUMENT_TYPE = Object.freeze({ SCHEMATIC_PAGE: 1, PCB: 3 });
+const CLI_STARTED_AT = new Date();
+const DEFAULT_OUTPUT = "evidence/netlist/identity-preflight.json";
 
 function usage() {
   return `Usage:
@@ -31,7 +34,8 @@ Options:
   --require-native-match      Return UNVERIFIED unless native comparison MATCHES
   --bridge-port PORT          Use one bridge port
   --window-id ID              Target a registered EasyEDA window
-  --output FILE               Relative JSON output path under cwd
+  --output FILE               Override evidence/netlist/identity-preflight.json
+  --operation-log FILE        Override the log path derived from --output
   --force                     Overwrite an existing output file
   --self-test                 Run deterministic offline tests
   --help                      Show this help
@@ -63,7 +67,8 @@ function parseArgs(argv) {
     requireNativeMatch: false,
     bridgePort: undefined,
     windowId: undefined,
-    output: undefined,
+    output: DEFAULT_OUTPUT,
+    operationLog: undefined,
     force: false,
     selfTest: false,
     help: false,
@@ -97,6 +102,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (option === "--output") {
       options.output = requiredValue(argv, index, option);
+      index += 1;
+    } else if (option === "--operation-log") {
+      options.operationLog = requiredValue(argv, index, option);
       index += 1;
     } else if (option === "--force") {
       options.force = true;
@@ -415,6 +423,7 @@ function runSelfTest() {
 }
 
 async function main() {
+  const startedAt = CLI_STARTED_AT;
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(usage());
@@ -477,9 +486,20 @@ async function main() {
     analysis,
   };
   const text = `${JSON.stringify(report, null, 2)}\n`;
-  if (options.output) {
-    await writeNewJson(options.output, report, { force: options.force });
-  }
+  const output = await writeNewJson(options.output, report, { force: options.force });
+  const endedAt = new Date();
+  await appendToolLogEntry(resolveOperationLogPath(options.operationLog, options.output), {
+    tool: "easyeda_identity_preflight.mjs",
+    gate: "SCHEMATIC_IDENTITY_STABLE",
+    operation: "saved/reopened schematic and PCB identity preflight",
+    outcome: "READ_ONLY",
+    semanticReadback: `${analysis.decision}; project ${schematic.project.uuid}; schematic ${schematic.document.uuid}; PCB ${pcb?.document?.uuid || "not requested"}`,
+    startedAt,
+    endedAt,
+    attemptDisposition: analysis.decision === "MATCH" ? "ACCEPTED" : analysis.decision === "MISMATCH" ? "REJECTED" : "UNKNOWN",
+    gateProgress: analysis.decision === "MATCH" ? "CLOSED" : analysis.decision === "MISMATCH" ? "BLOCKED" : "NO_CHANGE",
+    evidence: [output],
+  });
   process.stdout.write(text);
   process.exitCode =
     analysis.decision === "MATCH"
@@ -490,7 +510,11 @@ async function main() {
 }
 
 if (isMain(import.meta.url)) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    await appendToolFailureFromArgv(process.argv.slice(2), {
+      tool: "easyeda_identity_preflight.mjs", gate: "SCHEMATIC_IDENTITY_STABLE", startedAt: CLI_STARTED_AT, error,
+      defaultOutput: DEFAULT_OUTPUT,
+    }).catch(() => {});
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = EXIT.ERROR;
   });
